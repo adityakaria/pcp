@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2018 Red Hat.
+ * Copyright (c) 2017-2019 Red Hat.
  *
  * This library is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
@@ -122,16 +122,14 @@ const char *
 timeval_stream_str(struct timeval *stamp, char *buffer, int buflen)
 {
     __uint64_t	millipart;
-    __uint64_t	nanopart;
+    __uint64_t	fractions;
     __uint64_t	crossover = stamp->tv_usec / 1000;
 
     millipart = stamp->tv_sec * 1000;
     millipart += crossover;
-    nanopart = stamp->tv_usec * 1000;
-    nanopart -= crossover;
-
+    fractions = stamp->tv_usec % 1000;
     pmsprintf(buffer, buflen, "%" FMT_UINT64 "-%"FMT_UINT64,
-		(__uint64_t)millipart, (__uint64_t)nanopart);
+		(__uint64_t)millipart, (__uint64_t)fractions);
     return buffer;
 }
 
@@ -200,7 +198,8 @@ pmwebapi_units_str(metric_t *metric, char *buffer, int buflen)
     units = pmUnitsStr_r(&metric->desc.units, buffer, buflen);
     if (units && units[0] != '\0')
 	return units;
-    return "none";
+    pmsprintf(buffer, buflen, "none");
+    return (const char *)buffer;
 }
 
 const char *
@@ -321,10 +320,15 @@ pmwebapi_source_meta(context_t *c, char *buffer, int length)
     char	host[MAXHOSTNAMELEN];
     int		sts;
 
-    if ((pmGetContextHostName_r(c->context, host, sizeof(host))) == NULL)
+    if ((pmGetContextHostName_r(c->context, host, sizeof(host))) == NULL) {
+	c->setup = 0;
 	return PM_ERR_GENERIC;
+    }
     c->host = sdsnew(host);
-    if ((sts = pmGetContextLabels(set)) <= 0 && default_labelset(c, set) < 0)
+    sts = pmGetContextLabels(set);
+    if (sts == PM_ERR_IPC)
+	c->setup = 0;
+    if (sts <= 0 && default_labelset(c, set) < 0)
 	return sts;
     return pmMergeLabelSets(set, 1, buffer, length, labels, NULL);
 }
@@ -671,12 +675,13 @@ pmwebapi_free_context(context_t *cp)
     if (cp->context >= 0)
 	pmDestroyContext(cp->context);
 
-    if (cp->name.sds)
-	sdsfree(cp->name.sds);
-    if (cp->origin)
-	sdsfree(cp->origin);
-    if (cp->host)
-	sdsfree(cp->host);
+    sdsfree(cp->name.sds);
+    sdsfree(cp->origin);
+    sdsfree(cp->host);
+
+    sdsfree(cp->username);
+    sdsfree(cp->password);
+    sdsfree(cp->realm);
 
     if (cp->pmids)
 	dictRelease(cp->pmids);
@@ -714,17 +719,22 @@ pmwebapi_add_domain(context_t *context, unsigned int key)
 }
 
 void
-pmwebapi_add_domain_labels(struct domain *domain)
+pmwebapi_add_domain_labels(struct context *context, struct domain *domain)
 {
     char		errmsg[PM_MAXERRMSGLEN];
     int			sts;
 
-    if ((domain->labelset == NULL) &&
-	(sts = pmGetDomainLabels(domain->domain, &domain->labelset)) < 0) {
-	if (pmDebugOptions.series)
-	    fprintf(stderr, "failed to get domain (%d) labels: %s\n",
-		    domain->domain, pmErrStr_r(sts, errmsg, sizeof(errmsg)));
-	domain->labelset = NULL;
+    if (domain->labelset == NULL) {
+	sts = pmGetDomainLabels(domain->domain, &domain->labelset);
+	if (sts == PM_ERR_IPC)
+	    context->setup = 0;
+	if (sts < 0) {
+	    if (pmDebugOptions.series)
+		fprintf(stderr, "failed to get domain (%d) labels: %s\n",
+			domain->domain,
+			pmErrStr_r(sts, errmsg, sizeof(errmsg)));
+	    domain->labelset = NULL;
+	}
     }
 }
 
@@ -756,17 +766,22 @@ pmwebapi_add_cluster(context_t *context, domain_t *domain, pmID pmid)
 }
 
 void
-pmwebapi_add_cluster_labels(struct cluster *cluster)
+pmwebapi_add_cluster_labels(struct context *context, struct cluster *cluster)
 {
     char		errmsg[PM_MAXERRMSGLEN];
     int			sts;
 
-    if ((cluster->labelset == NULL) &&
-	(sts = pmGetClusterLabels(cluster->cluster, &cluster->labelset)) < 0) {
-	if (pmDebugOptions.series)
-	    fprintf(stderr, "failed to get cluster (%u) labels: %s\n",
-		    cluster->cluster, pmErrStr_r(sts, errmsg, sizeof(errmsg)));
-	cluster->labelset = NULL;
+    if (cluster->labelset == NULL) {
+	sts = pmGetClusterLabels(cluster->cluster, &cluster->labelset);
+	if (sts == PM_ERR_IPC)
+	    context->setup = 0;
+	if (sts < 0) {
+	    if (pmDebugOptions.series)
+		fprintf(stderr, "failed to get cluster (%u) labels: %s\n",
+			cluster->cluster,
+			pmErrStr_r(sts, errmsg, sizeof(errmsg)));
+	    cluster->labelset = NULL;
+	}
     }
 }
 
@@ -830,7 +845,7 @@ pmwebapi_labelsetdup(pmLabelSet *lp)
 }
 
 void
-pmwebapi_add_instances_labels(struct indom *indom)
+pmwebapi_add_instances_labels(struct context *context, struct indom *indom)
 {
     struct instance	*instance;
     pmLabelSet		*labels, *labelsets = NULL;
@@ -838,18 +853,24 @@ pmwebapi_add_instances_labels(struct indom *indom)
     char		errmsg[PM_MAXERRMSGLEN], buffer[64];
     int			i, inst, sts = 0, nsets = 0;
 
-    if ((indom->labelset == NULL) &&
-	(sts = pmGetInDomLabels(indom->indom, &indom->labelset)) < 0) {
-	if (pmDebugOptions.series)
-	    fprintf(stderr, "failed to get indom (%s) labels: %s\n",
-		    pmInDomStr_r(indom->indom, buffer, sizeof(buffer)),
-		    pmErrStr_r(sts, errmsg, sizeof(errmsg)));
-	indom->labelset = NULL;
-	indom->updated = sts = 0;
+    if (indom->labelset == NULL) {
+	sts = pmGetInDomLabels(indom->indom, &indom->labelset);
+	if (sts == PM_ERR_IPC)
+	    context->setup = 0;
+	if (sts < 0) {
+	    if (pmDebugOptions.series)
+		fprintf(stderr, "failed to get indom (%s) labels: %s\n",
+			pmInDomStr_r(indom->indom, buffer, sizeof(buffer)),
+			pmErrStr_r(sts, errmsg, sizeof(errmsg)));
+	    indom->labelset = NULL;
+	    indom->updated = sts = 0;
+	}
     }
 
-    if ((indom->updated == 0) &&
-	(sts = nsets = pmGetInstancesLabels(indom->indom, &labelsets)) > 0) {
+    if (indom->updated == 0) {
+	sts = nsets = pmGetInstancesLabels(indom->indom, &labelsets);
+	if (sts == PM_ERR_IPC)
+	    context->setup = 0;
 	for (i = 0; i < nsets; i++) {
 	    labels = &labelsets[i];
 	    if ((length = labelsetlen(labels)) == 0)
@@ -876,11 +897,12 @@ pmwebapi_add_instances_labels(struct indom *indom)
 		fprintf(stderr, "\nSHA1=%s\n", buffer);
 	    }
 	}
-	indom->updated = 1;
-    } else {
-	if (sts == 0)
+	if (sts >= 0)
 	    indom->updated = 1;
-	else if (sts < 0 && pmDebugOptions.series)
+    } else {
+	if (sts >= 0)
+	    indom->updated = 1;
+	else if (pmDebugOptions.series)
 	    fprintf(stderr, "failed to get indom (%s) instance labels: %s\n",
 		    pmInDomStr_r(indom->indom, buffer, sizeof(buffer)),
 		    pmErrStr_r(sts, errmsg, sizeof(errmsg)));
@@ -926,8 +948,23 @@ pmwebapi_add_instance(struct indom *indom, int inst, char *name)
     return pmwebapi_new_instance(indom, inst, sdsnewlen(name, length));
 }
 
+struct instance *
+pmwebapi_lookup_instance(struct indom *indom, int inst)
+{
+    struct instance	*instance;
+    char		*name;
+
+    if (pmNameInDom(indom->indom, inst, &name) < 0)
+	return NULL;
+
+    instance = pmwebapi_new_instance(indom, inst, sdsnew(name));
+    free(name);
+
+    return instance;
+}
+
 unsigned int
-pmwebapi_add_indom_instances(struct indom *indom)
+pmwebapi_add_indom_instances(struct context *context, struct indom *indom)
 {
     struct instance	*instance;
     unsigned int	count = 0;
@@ -951,6 +988,8 @@ pmwebapi_add_indom_instances(struct indom *indom)
 	    count++;
 	}
     } else {
+	if (sts == PM_ERR_IPC)
+	    context->setup = 0;
 	if (pmDebugOptions.series)
 	    fprintf(stderr, "failed to get indom (%s) instances: %s\n",
 		    pmInDomStr_r(indom->indom, buffer, sizeof(buffer)),
@@ -1022,6 +1061,7 @@ pmwebapi_add_metric(context_t *cp, pmDesc *desc, int numnames, char **names)
 struct metric *
 pmwebapi_new_pmid(context_t *cp, pmID pmid, pmLogInfoCallBack info, void *arg)
 {
+    struct metric	*mp = NULL;
     pmDesc		desc;
     char		**names, errmsg[PM_MAXERRMSGLEN], buffer[64];
     int			sts, numnames;
@@ -1034,6 +1074,8 @@ pmwebapi_new_pmid(context_t *cp, pmID pmid, pmLogInfoCallBack info, void *arg)
 	info(PMLOG_WARNING, msg, arg);
 	sdsfree(msg);
     } else if ((sts = pmLookupDesc(pmid, &desc)) < 0) {
+	if (sts == PM_ERR_IPC)
+	    cp->setup = 0;
 	infofmt(msg, "failed to lookup metric %s descriptor: %s",
 		pmIDStr_r(pmid, buffer, sizeof(buffer)),
 		pmErrStr_r(sts, errmsg, sizeof(errmsg)));
@@ -1046,24 +1088,129 @@ pmwebapi_new_pmid(context_t *cp, pmID pmid, pmLogInfoCallBack info, void *arg)
 	info(PMLOG_WARNING, msg, arg);
 	sdsfree(msg);
     } else {
-	return pmwebapi_new_metric(cp, &desc, numnames, names);
+	mp = pmwebapi_new_metric(cp, &desc, numnames, names);
+	free(names);
     }
-    return NULL;
+    return mp;
 }
 
 
 void
-pmwebapi_add_item_labels(struct metric *metric)
+pmwebapi_add_item_labels(struct context *context, struct metric *metric)
 {
     char		errmsg[PM_MAXERRMSGLEN];
     int			sts;
 
-    if ((metric->labelset == NULL) &&
-	(sts = pmGetItemLabels(metric->desc.pmid, &metric->labelset)) < 0) {
-	if (pmDebugOptions.series)
-	    fprintf(stderr, "failed to get metric item (%u) labels: %s\n",
-		    pmID_item(metric->desc.pmid),
-		    pmErrStr_r(sts, errmsg, sizeof(errmsg)));
-	metric->labelset = NULL;
+    if (metric->labelset == NULL) {
+	sts = pmGetItemLabels(metric->desc.pmid, &metric->labelset);
+	if (sts == PM_ERR_IPC)
+	    context->setup = 0;
+	if (sts < 0) {
+	    if (pmDebugOptions.series)
+		fprintf(stderr, "failed to get metric item (%u) labels: %s\n",
+			pmID_item(metric->desc.pmid),
+			pmErrStr_r(sts, errmsg, sizeof(errmsg)));
+	    metric->labelset = NULL;
+	}
     }
+}
+
+void
+pmwebapi_metric_help(struct context *context, struct metric *metric)
+{
+    pmID		pmid = metric->desc.pmid;
+    char		*text;
+    int			sts;
+
+    if (metric->oneline == NULL) {
+	sts = pmLookupText(pmid, PM_TEXT_ONELINE | PM_TEXT_DIRECT, &text);
+	if (sts == 0) {
+	    metric->oneline = sdsnew(text);
+	    free(text);
+	} else if (sts == PM_ERR_IPC) {
+	    context->setup = 0;
+	}
+    }
+    if (metric->helptext == NULL) {
+	sts = pmLookupText(pmid, PM_TEXT_HELP | PM_TEXT_DIRECT, &text);
+	if (sts == 0) {
+	    metric->helptext = sdsnew(text);
+	    free(text);
+	} else if (sts == PM_ERR_IPC) {
+	    context->setup = 0;
+	}
+    }
+}
+
+void
+pmwebapi_indom_help(struct context *context, struct indom *indom)
+{
+    pmInDom		id = indom->indom;
+    char		*text;
+    int			sts;
+
+    if (indom->oneline == NULL) {
+	sts = pmLookupInDomText(id, PM_TEXT_ONELINE | PM_TEXT_DIRECT, &text);
+	if (sts == 0) {
+	    indom->oneline = sdsnew(text);
+	    free(text);
+	} else if (sts == PM_ERR_IPC) {
+	    context->setup = 0;
+	}
+    }
+    if (indom->helptext == NULL) {
+	sts = pmLookupInDomText(id, PM_TEXT_HELP | PM_TEXT_DIRECT, &text);
+	if (sts == 0) {
+	    indom->helptext = sdsnew(text);
+	    free(text);
+	} else if (sts == PM_ERR_IPC) {
+	    context->setup = 0;
+	}
+    }
+}
+
+void
+pmwebapi_event_flags(void)
+{
+    /* TODO: not yet implemented */
+}
+
+void
+pmwebapi_event_missed(void)
+{
+    /* TODO: not yet implemented */
+}
+
+sds
+pmwebapi_event_parameter(sds s, pmValueSet *vsp, int inst, int *flags)
+{
+    (void)vsp;
+    (void)inst;
+    (void)flags;
+
+    return s;	/* TODO: not yet implemented */
+}
+
+sds
+pmwebapi_usectimestamp(sds s, struct timeval *timestamp)
+{
+    struct tm	tmp;
+    time_t	now;
+
+    now = (time_t)timestamp->tv_sec;
+    pmLocaltime(&now, &tmp);
+    return sdscatfmt(s, "%02d:%02d:%02d.%06d",
+		tmp.tm_hour, tmp.tm_min, tmp.tm_sec, (int)timestamp->tv_usec);
+}
+
+sds
+pmwebapi_nsectimestamp(sds s, struct timespec *timestamp)
+{
+    struct tm	tmp;
+    time_t	now;
+
+    now = (time_t)timestamp->tv_sec;
+    pmLocaltime(&now, &tmp);
+    return sdscatfmt(s, "%02d:%02d:%02d.%09d",
+		tmp.tm_hour, tmp.tm_min, tmp.tm_sec, (int)timestamp->tv_nsec);
 }

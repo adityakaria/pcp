@@ -15,6 +15,7 @@
 #include <limits.h>
 #include <assert.h>
 #include <ctype.h>
+#include "encoding.h"
 #include "discover.h"
 #include "schema.h"
 #include "util.h"
@@ -25,6 +26,8 @@ void freeSeriesLoadBaton(seriesLoadBaton *);
 
 void initSeriesGetContext(seriesGetContext *, void *);
 void freeSeriesGetContext(seriesGetContext *, int);
+
+static void server_cache_window(void *);
 
 /* cache information about this metric source (host/archive) */
 static void
@@ -80,6 +83,7 @@ static void
 load_prepare_metric(const char *name, void *arg)
 {
     seriesLoadBaton	*baton = (seriesLoadBaton *)arg;
+    context_t		*cp = &baton->pmapi.context;
     char		pmmsg[PM_MAXERRMSGLEN];
     char		*hname;
     pmID		pmid;
@@ -87,6 +91,8 @@ load_prepare_metric(const char *name, void *arg)
     int			sts;
 
     if ((sts = pmLookupName(1, (char **)&name, &pmid)) < 0) {
+	if (sts == PM_ERR_IPC)
+	    cp->setup = 0;
 	infofmt(msg, "failed to lookup metric name (pmid=%s): %s",
 		name, pmErrStr_r(sts, pmmsg, sizeof(pmmsg)));
 	batoninfo(baton, PMLOG_WARNING, msg);
@@ -116,10 +122,10 @@ get_instance_metadata(seriesLoadBaton *baton, pmInDom indom)
 
     if (indom != PM_INDOM_NULL) {
 	if ((dp = pmwebapi_add_domain(cp, pmInDom_domain(indom))))
-	    pmwebapi_add_domain_labels(dp);
+	    pmwebapi_add_domain_labels(cp, dp);
 	if ((ip = pmwebapi_add_indom(cp, dp, indom)) &&
-	    (count = pmwebapi_add_indom_instances(ip)) > 0)
-	    pmwebapi_add_instances_labels(ip);
+	    (count = pmwebapi_add_indom_instances(cp, ip)) > 0)
+	    pmwebapi_add_instances_labels(cp, ip);
     }
     return count;
 }
@@ -136,11 +142,15 @@ new_metric(seriesLoadBaton *baton, pmValueSet *vsp)
     int			count, sts, i;
 
     if ((sts = pmLookupDesc(vsp->pmid, &desc)) < 0) {
+	if (sts == PM_ERR_IPC)
+	    context->setup = 0;
 	infofmt(msg, "failed to lookup metric %s descriptor: %s",
 		pmIDStr_r(vsp->pmid, idbuf, sizeof(idbuf)),
 		pmErrStr_r(sts, errmsg, sizeof(errmsg)));
 	batoninfo(baton, PMLOG_WARNING, msg);
     } else if ((sts = count = pmNameAll(vsp->pmid, &nameall)) < 0) {
+	if (sts == PM_ERR_IPC)
+	    context->setup = 0;
 	infofmt(msg, "failed to lookup metric %s names: %s",
 		pmIDStr_r(vsp->pmid, idbuf, sizeof(idbuf)),
 		pmErrStr_r(sts, errmsg, sizeof(errmsg)));
@@ -153,12 +163,12 @@ new_metric(seriesLoadBaton *baton, pmValueSet *vsp)
 	return NULL;
     if (metric->cluster) {
 	if (metric->cluster->domain)
-	    pmwebapi_add_domain_labels(metric->cluster->domain);
-	pmwebapi_add_cluster_labels(metric->cluster);
+	    pmwebapi_add_domain_labels(context, metric->cluster->domain);
+	pmwebapi_add_cluster_labels(context, metric->cluster);
     }
     if (metric->indom)
-	pmwebapi_add_instances_labels(metric->indom);
-    pmwebapi_add_item_labels(metric);
+	pmwebapi_add_instances_labels(context, metric->indom);
+    pmwebapi_add_item_labels(context, metric);
     pmwebapi_metric_hash(metric);
 
     if (pmDebugOptions.series) {
@@ -244,6 +254,100 @@ pmwebapi_clear_metric_updated(metric_t *metric)
 	metric->u.vlist->value[i].updated = 0;
 }
 
+static sds
+pmwebapi_extract_events(pmValueSet *vsp, int inst)
+{
+    sds			s;
+    int			record, param, nrecords, flags, sts;
+    pmResult		**results, *result;
+
+    if ((sts = nrecords = pmUnpackEventRecords(vsp, inst, &results)) < 0) {
+	if (pmDebugOptions.series)
+	    fprintf(stderr, "pmUnpackEventRecords: %s\n", pmErrStr(sts));
+	return NULL;
+    }
+    nrecords = sts;
+    pmwebapi_event_flags();
+    pmwebapi_event_missed();
+    s = sdsnewlen("{", 1);
+    for (record = 0; record < nrecords; record++) {
+	if (record > 0)
+	    s = sdscatlen(s, ",", 1);
+	result = results[record];
+	s = sdscatfmt(s, "\"timestamp\":");
+	s = pmwebapi_usectimestamp(s, &result->timestamp);
+	for (param = flags = 0; param < result->numpmid; param++)
+	    s = pmwebapi_event_parameter(s, result->vset[param], param, &flags);
+    }
+    s = sdscatlen(s, "}", 1);
+    pmFreeEventResult(results);
+    return s;
+}
+
+static sds
+pmwebapi_extract_highres_events(pmValueSet *vsp, int inst)
+{
+    sds			s;
+    int			record, param, nrecords, flags, sts;
+    pmHighResResult	**results, *result;
+
+    if ((sts = pmUnpackHighResEventRecords(vsp, inst, &results)) < 0) {
+	if (pmDebugOptions.series)
+	    fprintf(stderr, "pmUnpackHighResEventRecords: %s\n", pmErrStr(sts));
+	return NULL;
+    }
+    nrecords = sts;
+    pmwebapi_event_flags();
+    pmwebapi_event_missed();
+    s = sdsempty();
+    for (record = 0; record < nrecords; record++) {
+	if (record > 0)
+	    s = sdscatlen(s, ",", 1);
+	result = results[record];
+	s = sdscatfmt(s, "\"timestamp\":");
+	s = pmwebapi_nsectimestamp(s, &result->timestamp);
+	for (param = flags = 0; param < result->numpmid; param++)
+	    s = pmwebapi_event_parameter(s, result->vset[param], param, &flags);
+    }
+    s = sdscatlen(s, "}", 1);
+    pmFreeHighResEventResult(results);
+    return s;
+}
+
+static int
+pmwebapi_extract_value(pmValueSet *vsp, int inst, int type, pmAtomValue *ap)
+{
+    pmValue		*vp = &vsp->vlist[inst];
+    unsigned int	length;
+
+    /*
+     * Special case (aggregates, strings and events) values up-front -
+     * avoid the need for multiple allocations and using sds directly.
+     */
+    switch (type) {
+    case PM_TYPE_STRING:
+    case PM_TYPE_AGGREGATE:
+    case PM_TYPE_AGGREGATE_STATIC:
+	length = vp->value.pval->vlen - PM_VAL_HDR_SIZE;
+	if (type == PM_TYPE_STRING && length > 0)
+	    length--;	/* do not escape the terminating null byte */
+	ap->cp = unicode_encode(vp->value.pval->vbuf, length);
+	return 0;
+
+    case PM_TYPE_EVENT:
+	ap->cp = pmwebapi_extract_events(vsp, inst);
+	return 0;
+
+    case PM_TYPE_HIGHRES_EVENT:
+	ap->cp = pmwebapi_extract_highres_events(vsp, inst);
+	return 0;
+
+    default:
+	break;
+    }
+    return pmExtractValue(vsp->valfmt, vp, type, ap, type);
+}
+
 int
 pmwebapi_add_valueset(metric_t *metric, pmValueSet *vsp)
 {
@@ -260,7 +364,8 @@ pmwebapi_add_valueset(metric_t *metric, pmValueSet *vsp)
     type = metric->desc.type;
     if (metric->desc.indom == PM_INDOM_NULL) {
 	vp = &vsp->vlist[0];
-	pmExtractValue(vsp->valfmt, vp, type, &metric->u.atom, type);
+	if (pmwebapi_extract_value(vsp, 0, type, &metric->u.atom) < 0)
+	    metric->updated = 0;
 	return 1;
     }
 
@@ -290,12 +395,11 @@ pmwebapi_add_valueset(metric_t *metric, pmValueSet *vsp)
 	    k = j;		/* successful direct mapping */
 	}
 	value = &metric->u.vlist->value[k];
-	pmExtractValue(vsp->valfmt, vp, type, &value->atom, type);
 	value->updated = 1;
+	if (pmwebapi_extract_value(vsp, j, type, &value->atom) < 0)
+	    value->updated = 0;
     }
 
-    if (metric->u.vlist)
-	metric->u.vlist->listcount = vsp->numval;
     return count;
 }
 
@@ -364,8 +468,6 @@ out:
     /* drop reference taken in server_cache_window */
     doneSeriesGetContext(context, "series_cache_update");
 }
-
-static void server_cache_window(void *);	/* TODO */
 
 static int
 server_cache_series(seriesLoadBaton *baton)
@@ -502,6 +604,7 @@ add_source_metric(seriesLoadBaton *baton, const char *metric)
 static void
 load_prepare_metrics(seriesLoadBaton *baton)
 {
+    context_t		*cp = &baton->pmapi.context;
     const char		**metrics = baton->metrics;
     char		pmmsg[PM_MAXERRMSGLEN];
     sds			msg;
@@ -510,6 +613,8 @@ load_prepare_metrics(seriesLoadBaton *baton)
     for (i = 0; i < baton->nmetrics; i++) {
 	if ((sts = pmTraversePMNS_r(metrics[i], load_prepare_metric, baton)) >= 0)
 	    continue;
+	if (sts == PM_ERR_IPC)
+	    cp->setup = 0;
 	infofmt(msg, "PMNS traversal failed for %s: %s",
 			metrics[i], pmErrStr_r(sts, pmmsg, sizeof(pmmsg)));
 	batoninfo(baton, PMLOG_WARNING, msg);

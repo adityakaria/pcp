@@ -564,15 +564,18 @@ typedef struct pmLabel {
 } pmLabel;
 
 /* Bits for the flags field (above) */
-#define PM_LABEL_OPTIONAL	(1<<7)
+#define PM_LABEL_COMPOUND	(1<<6)	/* name has multiple components */
+#define PM_LABEL_OPTIONAL	(1<<7)	/* intrinsic / extrinsic label */
 
 typedef struct pmLabelSet {
     unsigned int 	inst;		/* PM_IN_NULL or the instance ID */
     int			nlabels;	/* count of labels or error code */
     char		*json;		/* JSON formatted labels string */
     unsigned int	jsonlen : 16;	/* JSON string length byte count */
-    unsigned int	padding : 16;	/* zero, reserved for future use */
+    unsigned int	padding : 15;	/* zero, reserved for future use */
+    unsigned int	compound: 1;	/* flag indicating compound names */
     pmLabel		*labels;	/* indexing into the JSON string */
+    void		*hash;		/* compound naming hash (opaque) */
 } pmLabelSet;
 
 #define PM_MAXLABELS		((1<<8)-1)
@@ -1066,7 +1069,7 @@ PCP_CALL extern void pmFreeHighResEventResult(pmHighResResult **);
 /* Service discovery, for clients. */
 #define PM_SERVER_SERVICE_SPEC	"pmcd"
 #define PM_SERVER_PROXY_SPEC	"pmproxy"
-#define PM_SERVER_WEBD_SPEC	"pmwebd"
+#define PM_SERVER_WEBAPI_SPEC	"pmwebapi"
 
 PCP_CALL extern int pmDiscoverServices(const char *, const char *, char ***);
 

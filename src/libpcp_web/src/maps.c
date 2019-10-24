@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-2018 Red Hat.
+ * Copyright (c) 2017-2019 Red Hat.
  *
  * This library is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
@@ -70,7 +70,7 @@ static uint64_t
 sdsHashCallBack(const void *key)
 {
     return dictGenHashFunction((unsigned char *)key, sdslen((char *)key));
-} 
+}
 
 static int
 sdsCompareCallBack(void *privdata, const void *key1, const void *key2)
@@ -104,6 +104,13 @@ dictType sdsKeyDictCallBacks = {
     .keyDestructor	= sdsFreeCallBack,
 };
 
+dictType sdsOwnDictCallBacks = {
+    .hashFunction	= sdsHashCallBack,
+    .keyCompare		= sdsCompareCallBack,
+    .keyDestructor	= sdsFreeCallBack,
+    .valDestructor	= sdsFreeCallBack,
+};
+
 dictType sdsDictCallBacks = {
     .hashFunction	= sdsHashCallBack,
     .keyCompare		= sdsCompareCallBack,
@@ -130,20 +137,14 @@ redisMapsInit(void)
     contextmap = dictCreate(&sdsDictCallBacks, (void *)mapnames[3]);
 }
 
-redisMap *
-redisKeyMapCreate(const char *name)
-{
-    return dictCreate(&sdsDictCallBacks, (void *)name);
-}
-
-const char *
+sds
 redisMapName(redisMap *map)
 {
-    return (const char *)map->privdata;
+    return (sds)map->privdata;
 }
 
 redisMap *
-redisMapCreate(const char *name)
+redisMapCreate(sds name)
 {
     return dictCreate(&sdsDictCallBacks, (void *)name);
 }
@@ -171,5 +172,6 @@ redisMapValue(redisMapEntry *entry)
 void
 redisMapRelease(redisMap *map)
 {
+    sdsfree(redisMapName(map));
     dictRelease(map);
 }

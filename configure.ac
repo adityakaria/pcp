@@ -138,6 +138,12 @@ AC_ARG_WITH([perfevent],
     [do_perfevent=$withval; PACKAGE_CONFIGURE="$PACKAGE_CONFIGURE --with-perfevent=$withval"],
     [do_perfevent=check])
 
+AC_ARG_WITH([pmdastatsd],
+    [AC_HELP_STRING([--with-pmdastatsd],
+		   [enable statds pmda (default is on)])],
+    [do_pmdastatsd=$withval; PACKAGE_CONFIGURE="$PACKAGE_CONFIGURE --with-pmdastatsd=$withval"],
+    [do_pmdastatsd=check])
+
 AC_ARG_WITH([pmdapodman],
     [AC_HELP_STRING([--with-pmdapodman],
 		   [enable podman pmda (default is on)])],
@@ -149,6 +155,12 @@ AC_ARG_WITH([pmdabcc],
 		   [enable BCC pmda (default is on)])],
     [do_pmdabcc=$withval; PACKAGE_CONFIGURE="$PACKAGE_CONFIGURE --with-pmdabcc=$withval"],
     [do_pmdabcc=check])
+
+AC_ARG_WITH([pmdabpftrace],
+    [AC_HELP_STRING([--with-pmdabpftrace],
+		   [enable bpftrace pmda (default is on)])],
+    [do_pmdabpftrace=$withval; PACKAGE_CONFIGURE="$PACKAGE_CONFIGURE --with-pmdabpftrace=$withval"],
+    [do_pmdabpftrace=check])
 
 AC_ARG_WITH([pmdajson],
     [AC_HELP_STRING([--with-pmdajson],
@@ -179,12 +191,6 @@ AC_ARG_WITH([webapi],
 		   [enable REST API daemon (default is on)])],
     [do_webapi=$withval; PACKAGE_CONFIGURE="$PACKAGE_CONFIGURE --with-webapi=$withval"],
     [do_webapi=check])
-
-AC_ARG_WITH([webapps],
-    [AC_HELP_STRING([--with-webapps],
-                    [enable building of webapp packages (default is off)])],
-    [do_webapps=$withval; PACKAGE_CONFIGURE="$PACKAGE_CONFIGURE --with-webapps=$withval"],
-    [do_webapps=no])
 
 AC_ARG_WITH([selinux],
     [AC_HELP_STRING([--with-selinux],
@@ -273,7 +279,12 @@ if test $target_os = linux
 then
     AC_DEFINE(IS_LINUX, [1], [Platform is Linux])
     test -f /etc/SuSE-release && target_distro=suse
-    grep -q 'ID_LIKE="suse"' /etc/os-release 2> /dev/null && target_distro=suse
+    target_distro_variant=''
+    if test -f /etc/os-release
+    then
+	grep -q 'ID_LIKE="suse"' /etc/os-release 2>/dev/null && target_distro=suse
+	grep -qi 'opensuse"' /etc/os-release 2>/dev/null && target_distro_variant=opensuse
+    fi
     test -f /etc/fedora-release && target_distro=fedora
     test -f /etc/redhat-release && target_distro=redhat
     test -f /etc/debian_version && target_distro=debian
@@ -588,8 +599,16 @@ yacc=`$which "$yacc"`
 if test ! -x "$yacc"; then
     AC_MSG_ERROR([cannot find a valid 'yacc'/'bison' command.])
 fi
-yacc=$YACC
+dnl if this is bison, don't use the -y option
+yacc=`echo $YACC | sed -e '/^bison /{
+s/$/ /
+s/ -y / /
+s/ $//
+}'`
 AC_SUBST(yacc)
+
+AC_CHECK_PROGS(RAGEL, ragel, [])
+AC_SUBST(RAGEL)
 
 dnl check we don't get the Windows sort ...
 AC_MSG_CHECKING([where unix-like sort(1) lives])
@@ -789,6 +808,13 @@ AC_SUBST(GIT)
 
 AC_CHECK_PROGS(CPPCHECK, cppcheck, /bin/true)
 AC_SUBST(CPPCHECK)
+if $CPPCHECK --help | grep -- --library >/dev/null
+then
+    export CPPCHECK_POSIX_OPT="--library=posix"
+else
+    export CPPCHECK_POSIX_OPT="--std=posix"
+fi
+AC_SUBST(CPPCHECK_POSIX_OPT)
 
 AC_CHECK_PROGS(PYLINT, pylint, /bin/true)
 AC_SUBST(PYLINT)
@@ -985,6 +1011,23 @@ AS_IF([test "x$do_pmdabcc" = "xcheck"], [
 AC_SUBST(PMDA_BCC, $pmda_bcc)
 if $pmda_bcc; then AC_MSG_RESULT(yes); else AC_MSG_RESULT(no); fi
 
+AC_MSG_CHECKING([if the bpftrace PMDA should be included])
+pmda_bpftrace=false
+AS_IF([test "x$do_pmdabpftrace" = "xyes"], [pmda_bpftrace=true])
+AS_IF([test "x$do_pmdabpftrace" = "xcheck"], [
+    dnl bpftrace PMDA needs python 3.6+ and bpftrace with JSON support
+    if bpftrace --help 2>&1 | grep '\-f.*json' > /dev/null; then
+        have_bpftrace=true
+    else
+        have_bpftrace=false
+    fi
+
+    $enable_python3 && test "$PY_MAJOR" -eq 3 -a "$PY_MINOR" -ge 6 && \
+    $have_bpftrace && pmda_bpftrace=true
+])
+AC_SUBST(PMDA_BPFTRACE, $pmda_bpftrace)
+if $pmda_bpftrace; then AC_MSG_RESULT(yes); else AC_MSG_RESULT(no); fi
+
 dnl check if perl available for the build and runtime
 AC_CHECK_PROGS(PERL, perl)
 AC_SUBST(PERL)
@@ -1171,14 +1214,14 @@ fi
 AC_SUBST(PMDA_LIO, $pmda_lio)
 if $pmda_lio; then AC_MSG_RESULT(yes); else AC_MSG_RESULT(no); fi
 
-AC_MSG_CHECKING([if the Prometheus PMDA should be included])
-pmda_prometheus=false
+AC_MSG_CHECKING([if the OpenMetrics PMDA should be included])
+pmda_openmetrics=false
 if test "$have_python" = true
 then
-    $have_python_requests && $have_python_OrderedDict && pmda_prometheus=true
+    $have_python_requests && $have_python_OrderedDict && pmda_openmetrics=true
 fi
-AC_SUBST(PMDA_PROMETHEUS, $pmda_prometheus)
-if $pmda_prometheus; then AC_MSG_RESULT(yes); else AC_MSG_RESULT(no); fi
+AC_SUBST(PMDA_OPENMETRICS, $pmda_openmetrics)
+if $pmda_openmetrics; then AC_MSG_RESULT(yes); else AC_MSG_RESULT(no); fi
 
 AC_MSG_CHECKING([if the libvirt PMDA should be included])
 pmda_libvirt=false
@@ -1692,8 +1735,27 @@ then
 fi
 AC_SUBST(lib_for_regex)
 
-PKG_CHECK_MODULES([libuv], [libuv >= 1.16], [have_libuv=true], [have_libuv=false])
+PKG_CHECK_MODULES([openssl], [openssl >= 1.1.1], [have_openssl=true], [have_openssl=false])
+if $have_openssl
+then
+    AC_MSG_CHECKING([for SSL_read_ex])
+    savedLIBS=$LIBS
+    LIBS="$openssl_LIBS"
+    AC_TRY_LINK_FUNC(SSL_read_ex,
+	have_openssl=true
+	AC_MSG_RESULT(yes),
+	have_openssl=false
+	AC_MSG_RESULT(no))
+    LIBS=$savedLIBS
+fi
+AC_SUBST(HAVE_OPENSSL, [$have_openssl])
+
+PKG_CHECK_MODULES([libuv], [libuv >= 1.0], [have_libuv=true], [have_libuv=false])
 AC_SUBST(HAVE_LIBUV, [$have_libuv])
+AC_CHECK_LIB(uv, uv_pipe_chmod,
+	     AC_DEFINE(HAVE_UV_PIPE_CHMOD, [1], [uv_pipe_chmod API.])
+	     have_uv_pipe_chmod=true,
+	     have_uv_pipe_chmod=false)
 
 PKG_CHECK_MODULES([libvarlink], [libvarlink], [have_libvarlink=true], [have_libvarlink=false])
 AC_SUBST(HAVE_LIBVARLINK, [$have_libvarlink])
@@ -1799,6 +1861,23 @@ AC_MSG_CHECKING([if the perfevent PMDA should be included])
 AC_SUBST(PMDA_PERFEVENT, $pmda_perfevent)
 if $pmda_perfevent; then AC_MSG_RESULT(yes); else AC_MSG_RESULT(no); fi
 
+AC_CHECK_LIB(hdr_histogram, hdr_init, [lib_for_hdr_histogram="-lhdr_histogram"])
+AC_SUBST(lib_for_hdr_histogram)
+
+AC_CHECK_LIB(chan, chan_init, [lib_for_chan="-lchan"])
+AC_SUBST(lib_for_chan)
+
+dnl Do you have ragel, hdr_histogram and chan libraries for pmdastatsd?
+AC_MSG_CHECKING([if the statsd PMDA should be included])
+pmda_statsd=false
+AS_IF([test "x$do_pmdastatsd" = "xyes"], [pmda_statsd=true])
+AS_IF([test "x$do_pmdastatsd" = "xcheck"], [
+       if test -n "$RAGEL" -a "x$lib_for_hdr_histogram" != "x" -a "x$lib_for_chan" != "x"; then
+	pmda_statsd=true
+       fi])
+AC_SUBST(PMDA_STATSD, $pmda_statsd)
+if $pmda_statsd; then AC_MSG_RESULT(yes); else AC_MSG_RESULT(no); fi
+
 dnl Do you have varlink libraries for pmdapodman?
 AC_MSG_CHECKING([if the podman PMDA should be included])
 pmda_podman=false
@@ -1842,41 +1921,6 @@ else
 fi
 AC_SUBST(PMDA_POSTFIX,$pmda_postfix)
 if $pmda_postfix; then AC_MSG_RESULT(yes); else AC_MSG_RESULT(no); fi
-
-dnl Do you have system microhttpd libraries for pmwebd?
-PKG_CHECK_MODULES([libmicrohttpd], [libmicrohttpd > 0.9.9], [have_libmicrohttpd=true], [have_libmicrohttpd=false])
-AC_SUBST(HAVE_LIBMICROHTTPD, [$have_libmicrohttpd])
-
-dnl Do you have graphics libraries for pmwebd?
-PKG_CHECK_MODULES([cairo], [cairo >= 1.2, cairo-ft >= 1.2, cairo-png >= 1.2], [have_cairo=true], [have_cairo=false])
-AC_SUBST(HAVE_CAIRO, [$have_cairo])
-
-AC_LANG_PUSH([C++])
-AC_CHECK_HEADERS([boost/flyweight.hpp])
-AC_LANG_POP
-AC_SUBST(HAVE_BOOST_FLYWEIGHT_HPP, [$ac_cv_header_boost_flyweight_hpp])
-
-have_boost=false
-test "$ac_cv_header_boost_flyweight_hpp" = yes && have_boost=true
-AC_SUBST(have_boost)
-
-enable_webapi=false
-AS_IF([test "x$do_webapi" != "xno"], [
-    enable_webapi=true
-
-    if test "$have_libmicrohttpd" != "true"
-    then
-	enable_webapi=false
-	test "$do_webapi" != "check" && \
-	AC_MSG_ERROR([libmicrohttpd is not installed, cannot enable the web API])
-    elif test "$do_webapi" != "check" -a "x$cxx" = "x"
-    then
-	enable_webapi=false
-	test "$do_webapi" != "check" && \
-	AC_MSG_ERROR([C++ compiler unavailable, cannot enable the web API])
-    fi
-])
-AC_SUBST(enable_webapi)
 
 enable_manager=false
 AS_IF([test "x$do_manager" != "xno"], [
@@ -1931,149 +1975,126 @@ AC_SUBST(enable_selinux)
 AC_SUBST(pcp_selinux_dir)
 
 
-pcp_selinux_class_status=false
 pcp_selinux_cap_userns_ptrace=false
 pcp_selinux_container_runtime=false
 pcp_selinux_nsfs=false
 pcp_selinux_docker_var_lib=false
-pcp_selinux_svirt_lxc_net=false
-pcp_selinux_systemd_unit_file=false
-pcp_selinux_systemd_exec=false
 pcp_selinux_tracefs=false
 pcp_selinux_unreserved_port=false
-pcp_selinux_sock_file_getattr=false
 pcp_selinux_hostname_exec_map=false
-pcp_selinux_mock=false
 pcp_selinux_unconfined=false
 pcp_selinux_numad=false
-pcp_selinux_bpf_class=false
-pcp_selinux_wap_port=false
+pcp_selinux_bpf_status=false
 pcp_selinux_files_list_non_auth_dirs=false
+pcp_selinux_rpm_var_lib=false
+pcp_selinux_virt_var_run=false
+pcp_selinux_cap2_syslog=false
+pcp_selinux_icmp_socket=false
 
 AS_IF([test "x$enable_selinux" != "xfalse"], [
-for policy_file in /etc/selinux/targeted/policy/policy.*
-do
+
+    dnl new-style optional type tests ... seinfo once, then grep
+    dnl note [[...]] needed to escape m4 handling of [...]
+    seinfo -t >conftest.out
+    grep '^[[ 	]][[ 	]]*container_runtime_t$' <conftest.out >/dev/null \
+	&& pcp_selinux_container_runtime=true
+    grep '^[[ 	]][[ 	]]*nsfs_t$' <conftest.out >/dev/null \
+	&& pcp_selinux_nsfs=true
+    grep '^[[ 	]][[ 	]]*docker_var_lib_t$' <conftest.out >/dev/null \
+	&& pcp_selinux_docker_var_lib=true
+    grep '^[[ 	]][[ 	]]*unreserved_port_t$' <conftest.out >/dev/null \
+	&& pcp_selinux_unreserved_port=true
+    grep '^[[ 	]][[ 	]]*tracefs_t$' <conftest.out >/dev/null \
+	&& pcp_selinux_tracefs=true
+    grep '^[[ 	]][[ 	]]*unconfined_service_t$' <conftest.out >/dev/null \
+	&& pcp_selinux_unconfined=true
+    grep '^[[ 	]][[ 	]]*numad_t$' <conftest.out >/dev/null \
+	&& pcp_selinux_numad=true
+    grep '^[[ 	]][[ 	]]*rpm_var_lib_t$' <conftest.out >/dev/null \
+	&& pcp_selinux_rpm_var_lib=true
+    grep '^[[ 	]][[ 	]]*virt_var_run_t$' <conftest.out >/dev/null \
+	&& pcp_selinux_virt_var_run=true
+    rm -f conftest.out
+
     seinfo --common >/dev/null 2>&1
     if test $? -eq 0
     then
         seinfo_common_flag="--common"
     else
-        seinfo_common_flag="--class"
+        seinfo_common_flag=""
     fi
-    if test -f "$policy_file"
-    then
-        class_status=`eval seinfo -x --class=system $seinfo_common_flag  -- $policy_file | grep status | awk '{ print $1 }'`
-    	if test "x$class_status" != "x"
-	then
-	    pcp_selinux_class_status=true
-	fi
-	container_runtime=`eval seinfo -t -- $policy_file | grep container_runtime_t | awk '{ print $1 }'`
-	if test "x$container_runtime" != "x"
-	then
-	    pcp_selinux_container_runtime=true
-	fi
-	nsfs=`eval seinfo -t -- $policy_file | grep nsfs_t | awk '{ print $1 }'`
-	if test "x$nsfs" != "x"
-	then
-	    pcp_selinux_nsfs=true
-	fi
-	docker_var_lib=`eval seinfo -t -- $policy_file | grep docker_var_lib_t | awk '{ print $1 }'`
-	if test "x$docker_var_lib" != "x"
-	then
-	    pcp_selinux_docker_var_lib=true
-	fi
-	svirt_lxc_net=`eval seinfo -t -- $policy_file | grep svirt_lxc_net_t | awk '{ print $1 }'`
-	if test "x$svirt_lxc_net" != "x"
-	then
-	    pcp_selinux_svirt_lxc_net=true
-	fi
-	systemd_unit_file=`eval seinfo -t -- $policy_file | grep systemd_unit_file_t | awk '{ print $1 }'`
-	if test "x$systemd_unit_file" != "x"
-	then
-	    pcp_selinux_systemd_unit_file=true
-	fi
-	systemd_exec=`eval seinfo -t -- $policy_file | grep systemd_systemctl_exec_t | awk '{ print $1 }'`
-	if test "x$systemd_exec" != "x"
-	then
-	    pcp_selinux_systemd_exec=true
-	fi
-	cap_userns_ptrace=`eval seinfo -x --class=cap_userns $seinfo_common_flag -- $policy_file 2>&1 | grep sys_ptrace | awk '{ print $1 }'`
-    	if test "x$cap_userns_ptrace" != "x"
-	then
-	    pcp_selinux_cap_userns_ptrace=true
-	fi
-	unreserved_port=`eval seinfo -t -- $policy_file | grep unreserved_port_t | awk '{ print $1 }'`
-	if test "x$unreserved_port" != "x"
-	then
-	    pcp_selinux_unreserved_port=true
-	fi
-	tracefs=`eval seinfo -t -- $policy_file | grep tracefs_t | awk '{ print $1 }'`
-	if test "x$tracefs" != "x"
-	then
-	    pcp_selinux_tracefs=true
-	fi
-	sock_file_getattr=`eval seinfo -x --class=sock_file $seinfo_common_flag -- $policy_file | grep getattr | awk '{ print $1 }'`
-	if test "x$sock_file_getattr" != "x"
-	then
-	    pcp_selinux_sock_file_getattr=true
-	fi
-	hostname_exec_map_a=`eval seinfo -x --class=file $seinfo_common_flag -- $policy_file | grep map | awk '{ print $1 }'`
-	hostname_exec_map_b=`eval seinfo -x --common file -- $policy_file 2>/dev/null | grep map | awk '{ print $1 }'`
-	if test "x$hostname_exec_map_a" != "x" -o "x$hostname_exec_map_b" != "x"
-	then
-	    pcp_selinux_hostname_exec_map=true
-	fi
-	mock_var_lib=`eval seinfo -t -- $policy_file | grep mock_var_lib_t | awk '{ print $1 }'`
-	if test "x$mock_var_lib" != "x"
-	then
-	    pcp_selinux_mock=true
-	fi
-       unconfined=`eval seinfo -t -- $policy_file | grep unconfined_service_t | awk '{ print $1 }'`
-       if test "x$unconfined" != "x"
-       then
-           pcp_selinux_unconfined=true
-       fi
-       numad=`eval seinfo -t -- $policy_file | grep numad_t | awk '{ print $1 }'`
-       if test "x$numad" != "x"
-       then
-           pcp_selinux_numad=true
-       fi
-       bpf_class=`eval seinfo -x --class=bpf -- $policy_file 2>/dev/null | grep bpf | awk '{ print $1 }'`
-       if test "x$bpf_class" != "x"
-       then
-	    pcp_selinux_bpf_status=true
-       fi
-       wap_port=`eval seinfo -t -- $policy_file | grep wap_wsp_port_t | awk '{ print $1 }'`
-       if test "x$wap_port" != "x"
-       then
-            pcp_selinux_wap_port=true
-       fi
-       auth_file_type=`eval seinfo -a -- $policy_file | grep non_auth_file_type | awk '{ print $1 }'`
-       if test "x$auth_file_type" != "x"
-       then
-           pcp_selinux_files_list_non_auth_dirs=true
-       fi
-    fi
-done
+
+    dnl classes need to be done one at a time
+    seinfo -x --class=cap_userns $seinfo_common_flag 2>/dev/null \
+    | grep '^[[ 	]][[ 	]]*sys_ptrace$' >/dev/null \
+    && pcp_selinux_cap_userns_ptrace=true
+
+    dnl need to look in two places for this one?
+    seinfo -x --class=file $seinfo_common_flag 2>/dev/null \
+    | grep '^[[ 	]][[ 	]]*map$' >/dev/null \
+    && pcp_selinux_hostname_exec_map=true
+    seinfo -x --common file 2>/dev/null \
+    | grep '^[[ 	]][[ 	]]*map$' >/dev/null \
+    && pcp_selinux_hostname_exec_map=true
+
+    seinfo -x --class=bpf $seinfo_common_flag 2>/dev/null \
+    | grep '^[[ 	]][[ 	]]*class bpf$' >/dev/null \
+    && pcp_selinux_bpf_status=true
+
+    seinfo -a 2>/dev/null \
+    | grep '^[[ 	]][[ 	]]*non_auth_file_type$' >/dev/null \
+    && pcp_selinux_files_list_non_auth_dirs=true
+
+    seinfo -x --class=capability2 $seinfo_common_flag 2>/dev/null \
+    | grep '^[[ 	]][[ 	]]*syslog$' >/dev/null \
+    && pcp_selinux_cap2_syslog=true
+
+    seinfo -x --class=icmp_socket $seinfo_common_flag 2>/dev/null \
+    | grep '^[[ 	]][[ 	]]*class icmp_socket$' >/dev/null \
+    && pcp_selinux_icmp_socket=true
 ])
-AC_SUBST(pcp_selinux_class_status)
 AC_SUBST(pcp_selinux_cap_userns_ptrace)
 AC_SUBST(pcp_selinux_container_runtime)
 AC_SUBST(pcp_selinux_nsfs)
 AC_SUBST(pcp_selinux_docker_var_lib)
-AC_SUBST(pcp_selinux_svirt_lxc_net)
-AC_SUBST(pcp_selinux_systemd_unit_file)
-AC_SUBST(pcp_selinux_systemd_exec)
 AC_SUBST(pcp_selinux_unreserved_port)
 AC_SUBST(pcp_selinux_tracefs)
-AC_SUBST(pcp_selinux_sock_file_getattr)
 AC_SUBST(pcp_selinux_hostname_exec_map)
-AC_SUBST(pcp_selinux_mock)
 AC_SUBST(pcp_selinux_unconfined)
 AC_SUBST(pcp_selinux_numad)
 AC_SUBST(pcp_selinux_bpf_status)
-AC_SUBST(pcp_selinux_wap_port)
 AC_SUBST(pcp_selinux_files_list_non_auth_dirs)
+AC_SUBST(pcp_selinux_rpm_var_lib)
+AC_SUBST(pcp_selinux_virt_var_run)
+AC_SUBST(pcp_selinux_cap2_syslog)
+AC_SUBST(pcp_selinux_icmp_socket)
+
+pcp_selinux_files_mmap_all_files=false
+if test "x$enable_selinux" != "xfalse"
+then
+    dnl more work to do, files_mmap_all_files() macro is not always
+    dnl supported
+    AC_MSG_CHECKING([for selinux files_mmap_all_files() macro])
+    cat <<End-of-File >conftest.te
+module conftest 1.0;
+require {
+	attribute file_type;
+	attribute pcp_domain;
+	class file { append create execute open read write unlink map };
+}
+files_mmap_all_files(pcp_domain);
+End-of-File
+    if make -f /usr/share/selinux/devel/Makefile conftest.pp >/dev/null 2>&1
+    then
+	pcp_selinux_files_mmap_all_files=true
+	AC_MSG_RESULT(yes)
+    else
+	AC_MSG_RESULT(no)
+    fi
+    dnl cleanup turds from selinux Makefile
+    rm -f tmp/all_interfaces.conf tmp/conftest.* tmp/iferror.m4
+fi
+AC_SUBST(pcp_selinux_files_mmap_all_files)
 
 dnl Checks for library functions.
 AC_TYPE_SIGNAL
@@ -3114,7 +3135,6 @@ AC_SUBST(pcp_sysconf_dir)
 pcp_pmcdconf_path=$pcp_sysconf_dir/pmcd/pmcd.conf
 pcp_pmcdrclocal_path=$pcp_sysconf_dir/pmcd/rc.local
 pcp_pmcdoptions_path=$pcp_sysconf_dir/pmcd/pmcd.options
-pcp_pmwebdoptions_path=$pcp_sysconf_dir/pmwebd/pmwebd.options
 pcp_pmmgroptions_path=$pcp_sysconf_dir/pmmgr/pmmgr.options
 pcp_pmproxyoptions_path=$pcp_sysconf_dir/pmproxy/pmproxy.options
 pcp_pmiecontrol_path=$pcp_sysconf_dir/pmie/control
@@ -3123,7 +3143,6 @@ pcp_pmloggercontrol_path=$pcp_sysconf_dir/pmlogger/control
 AC_SUBST(pcp_pmcdconf_path)
 AC_SUBST(pcp_pmcdoptions_path)
 AC_SUBST(pcp_pmcdrclocal_path)
-AC_SUBST(pcp_pmwebdoptions_path)
 AC_SUBST(pcp_pmmgroptions_path)
 AC_SUBST(pcp_pmproxyoptions_path)
 AC_SUBST(pcp_pmiecontrol_path)
@@ -3692,16 +3711,6 @@ AC_TRY_COMPILE(
 ],
 [
 ], AC_DEFINE(HAVE_AI_ADDRCONFIG, [1], [AI_ADDRCONFIG macro]) AC_MSG_RESULT(yes), AC_MSG_RESULT(no))
-
-dnl Find external source tarballs for packaging
-
-have_webapps=false
-if test $do_webapps != "no"
-then
-    AC_MSG_NOTICE([adding web applications to the build])
-    have_webapps=true
-fi
-AC_SUBST(have_webapps)
 
 dnl Capture special options passed to configure
 pcp_prefix=`eval echo $prefix`

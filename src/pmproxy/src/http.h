@@ -2,14 +2,14 @@
  * Copyright (c) 2019 Red Hat.
  * 
  * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
- * 
+ * under the terms of the GNU Lesser General Public License as published
+ * by the Free Software Foundation; either version 2.1 of the License, or
+ * (at your option) any later version.
+ *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- * for more details.
+ * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public
+ * License for more details.
  */
 #ifndef PMPROXY_HTTP_H
 #define PMPROXY_HTTP_H
@@ -28,6 +28,7 @@ typedef enum json_flags {
 
 extern sds json_push_suffix(sds, json_flags);
 extern sds json_pop_suffix(sds);
+extern sds json_string(const sds);
 
 typedef enum http_flags {
     HTTP_FLAG_JSON	= (1<<0),
@@ -51,7 +52,6 @@ typedef unsigned int http_code;
 extern void http_transfer(struct client *);
 extern void http_reply(struct client *, sds, http_code, http_flags);
 extern void http_error(struct client *, http_code, const char *);
-extern void http_close(struct client *);
 
 extern int http_decode(const char *, size_t, sds);
 extern const char *http_status_mapping(http_code);
@@ -67,6 +67,7 @@ typedef int (*httpHeadersCallBack)(struct client *, struct dict *);
 typedef int (*httpUrlCallBack)(struct client *, sds, struct dict *);
 typedef int (*httpBodyCallBack)(struct client *, const char *, size_t);
 typedef int (*httpDoneCallBack)(struct client *);
+typedef void (*httpReleaseCallBack)(struct client *);
 
 typedef struct servlet {
     const char * const	name;
@@ -77,6 +78,10 @@ typedef struct servlet {
     httpHeadersCallBack	on_headers;
     httpBodyCallBack	on_body;
     httpDoneCallBack	on_done;
+    httpReleaseCallBack	on_release;
 } servlet;
+
+extern struct servlet pmseries_servlet;
+extern struct servlet pmwebapi_servlet;
 
 #endif /* PMPROXY_HTTP_H */

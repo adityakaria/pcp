@@ -156,7 +156,9 @@ _filter_pmproxy_log()
 	-e '/^pmproxy: PID/s/=.*/= PID/' \
 	-e 's/pmproxy([1-9][0-9]*) Error:/pmproxy(PID) Error:/' \
 	-e '/^pmproxy: Signalled (signal=[1-9][0-9]*).*/d' \
+	-e '/^pmproxy: disabled time series,.*(missing)/d' \
 	-e '/Info: connected to .*redis.*/d' \
+	-e '/Info: OpenSSL .*/d' \
 	-e '/Info: .* setup$/d' \
     #end
 }
@@ -249,6 +251,7 @@ _filter_optional_pmdas()
 	-e '/pmdabcc/d' \
 	-e '/pmdabind2/d' \
 	-e '/pmdabonding/d' \
+	-e '/pmdabpftrace/d' \
 	-e '/pmdabrocade/d' \
 	-e '/pmdacisco/d' \
 	-e '/pmdadbping/d' \
@@ -284,9 +287,11 @@ _filter_optional_pmdas()
 	-e '/pmdammv/d' \
 	-e '/pmdamounts/d' \
 	-e '/pmdampi/d' \
+	-e '/pmdamssql/d' \
 	-e '/pmdamysql/d' \
 	-e '/pmdanamed/d' \
 	-e '/pmdanasavg/d' \
+	-e '/pmdanetcheck/d' \
 	-e '/pmdanetfilter/d' \
 	-e '/pmdanetprobe/d' \
 	-e '/pmdanews/d' \
@@ -297,7 +302,7 @@ _filter_optional_pmdas()
 	-e '/pmdaperfevent/d' \
 	-e '/pmdapipe/d' \
 	-e '/pmdapodman/d' \
-	-e '/pmdaprometheus/d' \
+	-e '/pmdaopenmetrics/d' \
 	-e '/pmdaoracle/d' \
 	-e '/pmdaoraping/d' \
 	-e '/pmdapdns/d' \
@@ -319,6 +324,7 @@ _filter_optional_pmdas()
 	-e '/pmdasnmp/d' \
 	-e '/pmdasmart/d' \
 	-e '/pmdassping/d' \
+	-e '/pmdastatsd/d' \
 	-e '/pmdasummary/d' \
 	-e '/pmdasystemd/d' \
 	-e '/pmdasystemtap/d' \
@@ -351,6 +357,7 @@ _filter_top_pmns()
 	-e '/^    bcc /d' \
 	-e '/^    bind2 /d' \
 	-e '/^    bonding /d' \
+	-e '/^    bpftrace /d' \
 	-e '/^    brocade /d' \
 	-e '/^    broken /d' \
 	-e '/^    cgroup /d' \
@@ -388,8 +395,10 @@ _filter_top_pmns()
 	-e '/^    memcache /d' \
 	-e '/^    mmv /d' \
 	-e '/^    mpi /d' \
+	-e '/^    mssql /d' \
 	-e '/^    mysql /d' \
 	-e '/^    named /d' \
+	-e '/^    netcheck /d' \
 	-e '/^    netfilter /d' \
 	-e '/^    netprobe /d' \
 	-e '/^    news /d' \
@@ -397,6 +406,7 @@ _filter_top_pmns()
 	-e '/^    nginx /d' \
 	-e '/^    nutcracker /d' \
 	-e '/^    nvidia /d' \
+	-e '/^    openmetrics /d' \
 	-e '/^    oracle /d' \
 	-e '/^    oraping /d' \
 	-e '/^    pdns /d' \
@@ -407,7 +417,6 @@ _filter_top_pmns()
 	-e '/^    postfix /d' \
 	-e '/^    postgresql /d' \
 	-e '/^    proc /d' \
-	-e '/^    prometheus /d' \
 	-e '/^    rabbitmq /d' \
 	-e '/^    redis /d' \
 	-e '/^    rpm /d' \
@@ -418,6 +427,7 @@ _filter_top_pmns()
 	-e '/^    simple /d' \
 	-e '/^    smart /d' \
 	-e '/^    snmp /d' \
+	-e '/^    statsd /d' \
 	-e '/^    ssping /d' \
 	-e '/^    espping /d' \
 	-e '/^    summary /d' \
@@ -574,6 +584,7 @@ _filter_pmie_start()
 	-e '/^Waiting for pmie/d' \
 	-e "s;$PCP_RC_DIR/pmie;\$PCP_RC_DIR/pmie;g" \
 	-e '/(pmie) is disabled/d' \
+	-e '/(pmie) not permanently enabled/d' \
 	-e '/To enable/d' \
 	-e '/update-rc.d -f pmie remove/d' \
 	-e '/update-rc.d pmie defaults/d' \
@@ -625,26 +636,7 @@ _filter_pmproxy_stop()
 {
     sed \
 	-e "s;$PCP_RC_DIR/pmproxy;\$PCP_RC_DIR/pmproxy;g" \
-	-e '/^Waiting for pmproxy/s/\.\.\.[. ]*done/.../' \
-	-e '/^Waiting for pmproxy/s/\.\.\. *$/.../' \
-    | _filter_init_distro
-}
-
-_filter_pmwebd_start()
-{
-    sed \
-	-e '/^Stopping pmwebd/d' \
-	-e '/^Starting pmwebd/d' \
-	-e '/^Waiting for pmwebd/d' \
-	-e "s;$PCP_RC_DIR/pmwebd;\$PCP_RC_DIR/pmwebd;g" \
-    | _filter_init_distro
-}
-
-_filter_pmwebd_stop()
-{
-    sed \
-	-e '/^Waiting for pmwebd/d' \
-	-e "s;$PCP_RC_DIR/pmwebd;\$PCP_RC_DIR/pmwebd;g" \
+	-e '/^Waiting for pmproxy/d' \
     | _filter_init_distro
 }
 
@@ -891,4 +883,29 @@ _filter_views()
 	-e '/GConf-WARNING \*\*: Client failed to connect to the D-BUS/d' \
 	-e '/Failed to connect to socket .*dbus.*: Connection refused/d' \
 	-e '/^$/d'
+}
+
+_value_filter_any()
+{
+    sed -E -e "s/value .+/value OK/g"
+}
+
+_value_filter_nonzero()
+{
+    sed -e "s/value [1-9][0-9]*/value OK/g"
+}
+
+_instances_filter_any()
+{
+    awk '/value .+/ {print "OK"; exit}'
+}
+
+_instances_filter_nonzero()
+{
+    awk '/value [1-9][0-9]*/ {print "OK"; exit}'
+}
+
+_instances_filter_exact()
+{
+    grep "value $1" > /dev/null && echo OK
 }

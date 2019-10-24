@@ -1,9 +1,33 @@
+pcp (5.0.1-1) unstable; urgency=low
+
+  * New release (full details in CHANGELOG).
+
+ -- Nathan Scott <nathans@debian.org>  Mon, 16 Dec 2019 10:18:34 +1100
+
+pcp (5.0.0-1) unstable; urgency=low
+
+  * New release (full details in CHANGELOG).
+
+ -- Nathan Scott <nathans@debian.org>  Fri, 11 Oct 2019 11:38:43 +1100
+
+pcp (4.3.4-1) unstable; urgency=low
+
+  * New release (full details in CHANGELOG).
+
+ -- Nathan Scott <nathans@debian.org>  Fri, 16 Aug 2019 08:17:54 +1000
+
+pcp (4.3.3-1) unstable; urgency=low
+
+  * New release (full details in CHANGELOG).
+
+ -- Nathan Scott <nathans@debian.org>  Fri, 28 Jun 2019 13:27:17 +1000
+
 pcp (4.3.2-1) unstable; urgency=low
 
   * New release (full details in CHANGELOG).
   * Remove anibal from uploaders, MIA team request (closes: #925090)
 
- -- Nathan Scott <nathans@debian.org>  Fri, 26 Apr 2019 17:35:59 +1100
+ -- Nathan Scott <nathans@debian.org>  Fri, 26 Apr 2019 09:35:59 +1000
 
 pcp (4.3.1-1) unstable; urgency=low
 

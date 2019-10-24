@@ -311,6 +311,7 @@ s/CentOS\([0-9]\)/CentOS \1/
 }' \
 	-e '/FreeBSD/s/-RELEASE//' \
 	-e '/SLES\([0-9][0-9]*\) SP/s//\1-SP/' \
+	-e '/openSUSE/s/ Leap//' \
 	-e '/OpenIndiana/s/Hipster //' \
 	-e 's/^/_arch=/' \
 	-e 's/ /+_distro=/' \
@@ -326,7 +327,7 @@ s/CentOS\([0-9]\)/CentOS \1/
 	-e '/^[ 	]*$/d' \
     | while read distro_pat version_pat arch_pat packages
     do
-	if echo "$_distro" | grep "$distro_pat" >/dev/null
+	if echo "$_distro" | grep "^$distro_pat" >/dev/null
 	then
 	    # Distro matches, check versions
 	    #
@@ -335,7 +336,7 @@ s/CentOS\([0-9]\)/CentOS \1/
 	    then
 		:
 	    else
-		if echo "$_version" | grep "$version_pat" >/dev/null
+		if echo "$_version" | grep "^$version_pat" >/dev/null
 		then
 		    :
 		else
@@ -349,7 +350,7 @@ s/CentOS\([0-9]\)/CentOS \1/
 		then
 		    :
 		else
-		    if echo "$_arch" | grep "$arch_pat" >/dev/null
+		    if echo "$_arch" | grep "^$arch_pat" >/dev/null
 		    then
 			:
 		    else
@@ -503,9 +504,11 @@ then
 fi
 $home/whatami >$tmp.whatami
 
-# append original line numbers for non-blank lines
+# Append original line numbers for non-blank lines in the manifest.
+# Also rewrite [? ...] (package unknown) to [?:<original line number> ...]
+# for easier mapping back to the manifest file.
 #
-$PCP_AWK_PROG 'NF > 0 { print $0 " :" NR }' <$manifest >$tmp.manifest
+$PCP_AWK_PROG 'NF > 0 { gsub("\\[\\?", "[?:" NR); print $0 " :" NR }' <$manifest >$tmp.manifest
 
 if which $PCP_PYTHON_PROG >/dev/null 2>&1
 then
@@ -656,8 +659,8 @@ do
 done
 if [ ! -f $tmp.ok ]
 then
-    echo "Warning: don't understand what packing is being used here ..."
-    echo "         it is none of: $pkgtypes"
+    echo >&2 "Warning: don't understand what packing is being used here ..."
+    echo >&2 "         it is none of: $pkgtypes"
 fi
 
 # Strip the distro-dependent lines that do not apply ...
@@ -786,25 +789,24 @@ else
     then
 	for _pkg in $unavail_pkg
 	do
-	    if [ -z "$_version" ]
-	    then
-		sed <$tmp.manifest >$tmp.tmp -e "/[[ ]$_pkg[] ]/"'{
+	    sed <$tmp.manifest >$tmp.tmp -e "/[[ ]$_pkg[] ]/"'{
 s/\([[ ]\)'"$_pkg"'\([] ]\)/\1 \2/
 s/\(\[.*\) or/\1/g
 s/\(\[.*\) ([^)]*)/\1/g
 s/  */ /g
-s;\[  *\([](]\);[N/A on '"$_distro"' \1;
-s/  *]/]/
 }'
+	    if [ -z "$_version" ]
+	    then
+		sed <$tmp.tmp >$tmp.manifest \
+		    -e 's;\[  *\([](]\);[N/A on '"$_distro"' \1;' \
+		    -e 's/  *]/]/' \
+		#end
 	    else
-		sed <$tmp.manifest >$tmp.tmp -e "/[[ ]$_pkg[] ]/"'{
-s/\([[ ]\)'"$_pkg"'\([] ]\)/\1 \2/
-s/  */ /g
-s;\[  *\([](]\);[N/A on '"$_distro"' '"$_version"' \1;
-s/  *]/]/
-}'
+		sed <$tmp.tmp >$tmp.manifest \
+		    -e 's;\[  *\([](]\);[N/A on '"$_distro"' '"$_version"' \1;' \
+		    -e 's/  *]/]/' \
+		#end
 	    fi
-	    mv $tmp.tmp $tmp.manifest
 	    $very_verbose && echo >&2 "unavailable: $_pkg"
 	done
     fi
@@ -868,7 +870,7 @@ else
 	    pyver=`$PCP_PYTHON_PROG --version 2>&1 | sed -e 's/^[^0-9]*//' -e 's/\..*//'`
 	    if [ -z "$pyver" ]
 	    then
-		echo "Warning: cannot get Python version from: `$PCP_PYTHON_PROG --version`"
+		echo >&2 "Warning: cannot get Python version from: `$PCP_PYTHON_PROG --version`"
 	    else
 		#debug# echo "pyver=$pyver"
 		sed <$tmp.manifest >$tmp.tmp -e '/\/python[0-9]/{
@@ -1239,8 +1241,7 @@ debhelper	>=	5
 perl		>=	5.6
 python		>=	2.6
 # configure.ac
-libmicrohttpd	>	0.9.9
-libcairo2-dev	>=	1.2
+libuv-dev	>=	1.0
 End-of-File
     cat $tmp.dpkg \
     | sed -e 's/#.*//' -e '/^[ 	]*$/d' \
@@ -1263,7 +1264,7 @@ End-of-File
 	    then
 		$verbose && echo >&2 "$pkg: version installed $version, need $relop $ctlversion, OK"
 	    else
-		echo "Warning: $pkg version installed $version, need $relop $ctlversion"
+		echo >&2 "Warning: $pkg version installed $version, need $relop $ctlversion"
 	    fi
 	fi
     done
@@ -1304,7 +1305,7 @@ End-of-File
 	    if grep 'is not installed' $tmp.tmp >/dev/null 2>&1
 	    then
 		$verbose && echo >&2 "$rpm: not installed, need $relop $specversion$pcp_pkg, OK"
-		echo "Warning: $rpm not installed, need $relop $specversion$pcp_pkg" >>$tmp.notfound
+		echo >&2 "Warning: $rpm not installed, need $relop $specversion$pcp_pkg" >>$tmp.notfound
 	    else
 		touch $tmp.found
 		version=`sed <$tmp.tmp -e "s/^$rpm-//" -e 's/-.*//'`
@@ -1313,7 +1314,7 @@ End-of-File
 		then
 		    $verbose && echo >&2 "$rpm: version installed $version, need $relop $specversion$pcp_pkg, OK"
 		else
-		    echo "Warning: $rpm version installed $version, need $relop $specversion$pcp_pkg"
+		    echo >&2 "Warning: $rpm version installed $version, need $relop $specversion$pcp_pkg"
 		fi
 	    fi
 	done
@@ -1334,10 +1335,7 @@ then
 # one line per rpm
 # lib-name	relop	version	pcp-pkg
 # text after # is treated as a comment
-libmicrohttpd	>	0.9.9
-cairo		>=	1.2
-cairo-ft	>=	1.2
-cairo-png	>=	1.2
+libuv           >=	1.0
 End-of-File
     cat $tmp.pkg-config \
     | sed -e 's/#.*//' -e '/^[ 	]*$/d' \
@@ -1347,14 +1345,14 @@ End-of-File
 	libversion=`pkg-config --modversion "$lib" 2>/dev/null`
 	if [ -z "$libversion" ]
 	then
-	    echo "Warning: Package $lib not known to pkg-config , need $relop $version$pcp_pkg"
+	    echo >&2 "Warning: Package $lib not known to pkg-config , need $relop $version$pcp_pkg"
 	else
 	    ( echo $libversion; echo $version ) | _compare $relop
 	    if [ $? = 0 ]
 	    then
 		$verbose && echo >&2 "$lib: version installed $libversion, need $relop $version$pcp_pkg, OK"
 	    else
-		echo "Warning: $lib version installed $libversion, need $relop $version$pcp_pkg"
+		echo >&2 "Warning: $lib version installed $libversion, need $relop $version$pcp_pkg"
 	    fi
 	fi
     done
@@ -1409,7 +1407,7 @@ p
 	-e 's/^[0-9][0-9]*: //' \
 	-e 's/: / /g' \
 	-e '/ inet /s/\/.*/ /' \
-    | awk '
+    | awk >&2 '
 /^[^ 	]/	{ iface = $1; next }
 /inet addr:'$ipaddr' / || /inet '$ipaddr'[ \/]/ {
 			  if (iface == "lo")
@@ -1429,14 +1427,14 @@ then
     pmhost=`pmhostname`
     if [ -z "$pmhost" ]
     then
-	echo "Warning: pmhostname returns nothing!"
+	echo >&2 "Warning: pmhostname returns nothing!"
     else
 	case $pmhost
 	in
 	    $host|$host.*)
 		    ;;
 	    *)
-		    echo "Warning: hostname ($host) is not a prefix of pmhostname ($pmhost)"
+		    echo >&2 "Warning: hostname ($host) is not a prefix of pmhostname ($pmhost)"
 		    ;;
 	esac
 	_check_host $pmhost
@@ -1460,14 +1458,14 @@ then
 		echo "Use \"$ sudo -E .../qa/admin/allow-pmlc-access\" to fix this."
 	    fi
 	else
-	    echo "Warning: \"$PCP_VAR_DIR/config/pcp/pmlogger/config.default\" is missing"
+	    echo >&2 "Warning: \"$PCP_VAR_DIR/config/pcp/pmlogger/config.default\" is missing"
 	fi
     else
-	echo "Please ignore Warnings from _getnetworkaddr unless you wish to run the"
-	echo "full PCP QA suite."
+	echo >&2 "Please ignore Warnings from _getnetworkaddr unless you wish to run the"
+	echo >&2 "full PCP QA suite."
     fi
 else
-    echo "Warning: \"/etc/pcp.conf\" is missing"
+    echo >&2 "Warning: \"/etc/pcp.conf\" is missing"
 fi
 
 if sudo -u pcp id >/dev/null
@@ -1490,7 +1488,7 @@ in
 	    allowkmem=`sysctl kern.allowkmem | sed -e 's/.*=//'`
 	    if [ "$allowkmem" != 1 ]
 	    then
-		echo "Warning: kern.allowkmem is \"$allowkmem\" not 1 and so openbsd PMDA will not be able"
+		echo >&2 "Warning: kern.allowkmem is \"$allowkmem\" not 1 and so openbsd PMDA will not be able"
 		echo "         to access /dev/kmem"
 		echo "         Suggest adding kern.allowkmem=1 to etc/sysctl.conf and rebooting."
 	    fi

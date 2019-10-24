@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Red Hat.
+ * Copyright (c) 2018-2019 Red Hat.
  *
  * This library is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
@@ -170,7 +170,7 @@ pmDiscoverArchives(const char *dir, pmDiscoverModule *module, void *arg)
     a->flags |= PM_DISCOVER_FLAGS_DIRECTORY;
 
     while (uv_fs_scandir_next(&req, &dent) != UV_EOF) {
-	snprintf(path, sizeof(path), "%s%c%s", dir, sep, dent.name);
+	pmsprintf(path, sizeof(path), "%s%c%s", dir, sep, dent.name);
 	if (uv_fs_stat(NULL, &sreq, path, NULL) < 0)
 	    continue;
 	s = &sreq.statbuf;
@@ -262,8 +262,8 @@ fs_change_callBack(uv_fs_event_t *handle, const char *filename, int events, int 
 	uv_fs_req_cleanup(&sreq);
     }
 
-    if (p && p->changed && path_changed)
-    	p->changed(p);
+    if (p && p->changed && path_changed && !(p->flags & PM_DISCOVER_FLAGS_DELETED))
+	p->changed(p);
 
     sdsfree(path);
 }
@@ -356,7 +356,7 @@ pmDiscoverFlagsStr(pmDiscover *p)
     unsigned int	i;
     static char		buf[128];
 
-    snprintf(buf, sizeof(buf), "flags: 0x%04x |", p->flags);
+    pmsprintf(buf, sizeof(buf), "flags: 0x%04x |", p->flags);
     for (i=0; flags_str[i].name; i++) {
     	if (p->flags & flags_str[i].flag)
 	    strncat(buf, flags_str[i].name, sizeof(buf)-1);
@@ -619,7 +619,7 @@ pmDiscoverInvokeCallBacks(pmDiscover *p)
     pmDesc		desc;
     off_t		off;
     char		*buffer;
-    int			i, nb, len, sts, nrec, nsets;
+    int			e, i, nb, len, sts, nrec, nsets;
     int			type, id; /* pmID or pmInDom */
     int			nnames;
     char		**names;
@@ -780,15 +780,18 @@ pmDiscoverInvokeCallBacks(pmDiscover *p)
 	    }
 
 	    if (pmDebugOptions.discovery)
-		fprintf(stderr, "Log metadata read len %4d type %d:", len, hdr.type);
+		fprintf(stderr, "Log metadata read len %4d type %d: ", len, hdr.type);
 
 	    switch (hdr.type) {
 		case TYPE_DESC:
 		    /* decode pmDesc result from PDU buffer */
 		    nnames = 0;
 		    names = NULL;
-		    if (pmDiscoverDecodeMetaDesc(buf, len, &desc, &nnames, &names) < 0)
+		    if ((e = pmDiscoverDecodeMetaDesc(buf, len, &desc, &nnames, &names)) < 0) {
+			if (pmDebugOptions.discovery)
+			    fprintf(stderr, " pmDiscoverDecodeMetaDesc failed: err=%d %s\n", e, pmErrStr(e));
 			break;
+		    }
 		    /* use timestamp from last modification */
 		    ts.tv_sec = p->statbuf.st_mtim.tv_sec;
 		    ts.tv_nsec = p->statbuf.st_mtim.tv_nsec;
@@ -801,8 +804,11 @@ pmDiscoverInvokeCallBacks(pmDiscover *p)
 
 	    	case TYPE_INDOM:
 		    /* decode indom result from buffer */
-		    if (pmDiscoverDecodeMetaInDom(buf, len, &ts, &inresult) < 0)
+		    if ((e = pmDiscoverDecodeMetaInDom(buf, len, &ts, &inresult)) < 0) {
+			if (pmDebugOptions.discovery)
+			    fprintf(stderr, " pmDiscoverDecodeMetaInDom failed: err=%d %s\n", e, pmErrStr(e));
 			break;
+		    }
 		    pmDiscoverInvokeInDomCallBacks(p, &ts, &inresult);
 		    if (inresult.numinst > 0) {
 			for (i = 0; i < inresult.numinst; i++)
@@ -814,8 +820,11 @@ pmDiscoverInvokeCallBacks(pmDiscover *p)
 
 		case TYPE_LABEL:
 		    /* decode labelset from buffer */
-		    if (pmDiscoverDecodeMetaLabelSet(buf, len, &ts, &id, &type, &nsets, &labelset) < 0)
+		    if ((e = pmDiscoverDecodeMetaLabelSet(buf, len, &ts, &id, &type, &nsets, &labelset)) < 0) {
+			if (pmDebugOptions.discovery)
+			    fprintf(stderr, " pmDiscoverDecodeMetaLabelSet failed: err=%d %s\n", e, pmErrStr(e));
 			break;
+		    }
 
 		    /*
 		     * If this is a context labelset, we need to store it in 'p' and
@@ -844,8 +853,11 @@ pmDiscoverInvokeCallBacks(pmDiscover *p)
 			fprintf(stderr, "TEXT\n");
 		    /* decode help text from buffer */
 		    buffer = NULL;
-		    if ((sts = pmDiscoverDecodeMetaHelpText(buf, len, &type, &id, &buffer)) < 0)
+		    if ((e = pmDiscoverDecodeMetaHelpText(buf, len, &type, &id, &buffer)) < 0) {
+			if (pmDebugOptions.discovery)
+			    fprintf(stderr, " pmDiscoverDecodeMetaHelpText failed: err=%d %s\n", e, pmErrStr(e));
 			break;
+		    }
 		    /* use timestamp from last modification */
 		    ts.tv_sec = p->statbuf.st_mtim.tv_sec;
 		    ts.tv_nsec = p->statbuf.st_mtim.tv_nsec;
@@ -872,21 +884,21 @@ changed_callback(pmDiscover *p)
 	fprintf(stderr, "CHANGED %s (%s)\n", p->context.name,
 			pmDiscoverFlagsStr(p));
 
-    if (p->flags & PM_DISCOVER_FLAGS_DIRECTORY) {
+    if (p->flags & PM_DISCOVER_FLAGS_DELETED) {
+	/* path or directory has been deleted - remove from hash table */
+	deleted_callback(p);
+    }
+    else if (p->flags & PM_DISCOVER_FLAGS_DIRECTORY) {
 	/*
 	 * A changed directory path means a new archive or subdirectory
-	 * has been created, or an existing path has been deleted.
+	 * has been created - traverse and update the hash table.
 	 */
 	pmDiscoverArchives(p->context.name, p->module, p->data);
 	pmDiscoverTraverse(PM_DISCOVER_FLAGS_NEW, created_callback);
-	pmDiscoverTraverse(PM_DISCOVER_FLAGS_DELETED, deleted_callback);
-    }
-    else if (p->flags & PM_DISCOVER_FLAGS_DELETED) {
-	/* path has been deleted - cleanup and remove */
-	deleted_callback(p);
+	// pmDiscoverTraverse(PM_DISCOVER_FLAGS_DELETED, deleted_callback);
     }
     else if (p->flags & PM_DISCOVER_FLAGS_COMPRESSED) {
-    	/* we do not monitor any compressed files - do nothing */
+    	/* we do not monitor compressed files - do nothing */
 	; /**/
     }
     else if (p->flags & (PM_DISCOVER_FLAGS_DATAVOL|PM_DISCOVER_FLAGS_META)) {
@@ -1130,6 +1142,10 @@ pmDiscoverDecodeMetaLabelSet(uint32_t *buf, int buflen, pmTimespec *ts, int *ide
     nsets = *((unsigned int *)&tbuf[k]);
     nsets = ntohl(nsets);
     k += sizeof(nsets);
+
+    if (pmDebugOptions.discovery)
+	fprintf(stderr, "DECODE LABELSET type=%d (%s) ident=%d nsets=%d\n",
+	    type, __pmLabelTypeString(type), ident, nsets);
 
     if (nsets < 0)
     	return PM_ERR_IPC;

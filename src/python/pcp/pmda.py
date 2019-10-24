@@ -1,7 +1,7 @@
 # pylint: disable=C0103
 """Wrapper module for libpcp_pmda - Performace Co-Pilot Domain Agent API
 #
-# Copyright (C) 2013-2015,2017-2018 Red Hat.
+# Copyright (C) 2013-2015,2017-2019 Red Hat.
 #
 # This file is part of the "pcp" module, the python interfaces for the
 # Performance Co-Pilot toolkit.
@@ -15,6 +15,9 @@
 # WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
 # or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
 # for more details.
+#
+# pylint: disable=missing-docstring,line-too-long,bad-continuation
+# pylint: disable=too-many-lines,too-many-arguments,too-many-nested-blocks
 #
 
 # See pmdasimple.py for an example use of this module.
@@ -63,6 +66,9 @@ LIBPCP_PMDA.pmdaAddLabels.argtypes = [POINTER(POINTER(pmLabelSet)), c_char_p]
 LIBPCP_PMDA.pmdaAddLabelFlags.restype = c_int
 LIBPCP_PMDA.pmdaAddLabelFlags.argtypes = [POINTER(pmLabelSet), c_int]
 
+LIBPCP_PMDA.pmdaGetContext.restype = c_int
+LIBPCP_PMDA.pmdaGetContext.argtypes = []
+
 def pmdaAddLabels(label):
     result_p = POINTER(pmLabelSet)()
     status = LIBPCP_PMDA.pmdaAddLabels(byref(result_p), label)
@@ -72,6 +78,12 @@ def pmdaAddLabels(label):
 
 def pmdaAddLabelFlags(labels, flags):
     status = LIBPCP_PMDA.pmdaAddLabelFlags(labels, flags)
+    if status < 0:
+        raise pmErr(status)
+    return status
+
+def pmdaGetContext():
+    status = LIBPCP_PMDA.pmdaGetContext()
     if status < 0:
         raise pmErr(status)
     return status
@@ -167,14 +179,13 @@ class pmdaIndom(Structure):
 
     def set_list_instances(self, insts):
         instance_count = len(insts)
-        if (instance_count == 0):
-            return
         instance_array = (pmdaInstid * instance_count)()
         for i in range(instance_count):
             instance_array[i].i_inst = insts[i].i_inst
             instance_array[i].i_name = insts[i].i_name
         self.it_set = instance_array
         self.it_numinst = instance_count
+        cpmda.set_need_refresh()
 
     def set_dict_instances(self, indom, insts):
         LIBPCP_PMDA.pmdaCacheOp(indom, cpmda.PMDA_CACHE_INACTIVE)
@@ -392,7 +403,7 @@ class MetricDispatch(object):
         Lookup the name associated with a performance metric identifier.
         """
         try:
-            name = self._metric_names[self.pmid(cluster, item)]
+            name = self._metric_names[cpmda.pmda_pmid(cluster, item)]
         except KeyError:
             name = None
         return name
@@ -518,6 +529,10 @@ class PMDA(MetricDispatch):
         return cpmda.set_label_callback(label_callback)
 
     @staticmethod
+    def set_attribute_callback(attribute_callback):
+        return cpmda.set_attribute_callback(attribute_callback)
+
+    @staticmethod
     def set_store_callback(store_callback):
         return cpmda.set_store_callback(store_callback)
 
@@ -546,6 +561,10 @@ class PMDA(MetricDispatch):
         return cpmda.pmid_build(domain, cluster, item)
 
     @staticmethod
+    def pmid_cluster(cluster):
+        return cpmda.pmid_cluster(cluster)
+
+    @staticmethod
     def indom(serial):
         return cpmda.pmda_indom(serial)
 
@@ -562,8 +581,16 @@ class PMDA(MetricDispatch):
         return cpmda.pmda_uptime(now)
 
     @staticmethod
+    def set_comm_flags(flags):
+        return cpmda.pmda_set_comm_flags(flags)
+
+    @staticmethod
     def log(message):
         return cpmda.pmda_log(message)
+
+    @staticmethod
+    def dbg(message):
+        return cpmda.pmda_dbg(message)
 
     @staticmethod
     def err(message):

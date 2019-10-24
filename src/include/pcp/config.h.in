@@ -36,9 +36,6 @@
 /* Define to 1 if you have the <bits/wordsize.h> header file. */
 #undef HAVE_BITS_WORDSIZE_H
 
-/* Define to 1 if you have the <boost/flyweight.hpp> header file. */
-#undef HAVE_BOOST_FLYWEIGHT_HPP
-
 /* Define to 1 if you have the `brk' function. */
 #undef HAVE_BRK
 
@@ -617,6 +614,9 @@
 
 /* Define to 1 if you have the `usleep' function. */
 #undef HAVE_USLEEP
+
+/* uv_pipe_chmod API. */
+#undef HAVE_UV_PIPE_CHMOD
 
 /* Define to 1 if you have the `valloc' function. */
 #undef HAVE_VALLOC

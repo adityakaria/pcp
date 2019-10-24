@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018 Red Hat.
+ * Copyright (c) 2018-2019 Red Hat.
  *
  * This library is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
@@ -100,6 +100,7 @@ extern void pmSeriesDiscoverText(pmDiscoverEvent *,
  */
 typedef struct discoverModuleData {
     unsigned int		handle;		/* callbacks context handle */
+    unsigned int		shareslots;	/* boolean, sharing 'slots' */
     sds				logname;	/* archive directory dirname */
     mmv_registry_t		*metrics;	/* registry of metrics */
     struct dict			*config;	/* configuration dict */
@@ -110,14 +111,8 @@ typedef struct discoverModuleData {
 
 extern discoverModuleData *getDiscoverModuleData(pmDiscoverModule *);
 
-#ifdef HAVE_LIBUV
 extern int pmDiscoverRegister(const char *,
 		pmDiscoverModule *, pmDiscoverCallBacks *, void *);
 extern void pmDiscoverUnregister(int);
-
-#else
-#define pmDiscoverRegister(path, module, callbacks, data)	(-EOPNOTSUPP)
-#define pmDiscoverUnregister(handle)	do { } while (0)
-#endif
 
 #endif /* SERIES_DISCOVER_H */

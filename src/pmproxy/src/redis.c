@@ -2,12 +2,12 @@
  * Copyright (c) 2018-2019 Red Hat.
  * Copyright (c) 2018 Challa Venkata Naga Prajwal <cvnprajwal at gmail dot com>
  *
- * This library is free software; you can redistribute it and/or modify it
+ * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
  * by the Free Software Foundation; either version 2.1 of the License, or
  * (at your option) any later version.
  *
- * This library is distributed in the hope that it will be useful, but
+ * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public
  * License for more details.
@@ -81,7 +81,7 @@ on_redis_client_read(struct proxy *proxy, struct client *client,
 	redisSlotsProxyConnect(proxy->slots,
 		proxylog, &client->u.redis.reader,
 		buf->base, nread, on_redis_server_reply, client) < 0) {
-	uv_close((uv_handle_t *)&client->stream, on_client_close);
+	client_close(client);
     }
 }
 
@@ -97,12 +97,10 @@ on_redis_connected(void *arg)
     struct proxy	*proxy = (struct proxy *)arg;
     sds			message;
 
-    pmNotifyErr(LOG_INFO, "connected to redis server(s)\n");
-
-    message = sdsnew("slots");
+    message = sdsnew("Redis slots");
     if (redis_protocol)
 	message = sdscat(message, ", command keys");
-    if (archive_discovery | series_queries)
+    if (archive_discovery || series_queries)
 	message = sdscat(message, ", schema version");
     pmNotifyErr(LOG_INFO, "%s setup\n", message);
     sdsfree(message);
@@ -110,32 +108,50 @@ on_redis_connected(void *arg)
     pmDiscoverSetSlots(&redis_discover.module, proxy->slots);
 }
 
+/*
+ * Attempt to establish a Redis connection straight away;
+ * which is achieved via a timer that expires immediately
+ * during the startup process.
+ */
 void
-setup_redis_modules(struct proxy *proxy)
+setup_redis_module(struct proxy *proxy)
 {
     redisSlotsFlags	flags = SLOTS_NONE;
     sds			option;
 
     if ((option = pmIniFileLookup(config, "pmproxy", "redis.enabled")))
-	redis_protocol = strncmp(option, "true", sdslen(option));
+	redis_protocol = (strncmp(option, "true", sdslen(option)) == 0);
     if ((option = pmIniFileLookup(config, "pmseries", "enabled")))
-	series_queries = strncmp(option, "true", sdslen(option));
+	series_queries = (strncmp(option, "true", sdslen(option)) == 0);
     if ((option = pmIniFileLookup(config, "discover", "enabled")))
-	archive_discovery = strncmp(option, "true", sdslen(option));
+	archive_discovery = (strncmp(option, "true", sdslen(option)) == 0);
 
     if (proxy->slots == NULL) {
 	if (redis_protocol)
 	    flags |= SLOTS_KEYMAP;
-	if (archive_discovery | series_queries)
+	if (archive_discovery || series_queries)
 	    flags |= SLOTS_VERSION;
 	proxy->slots = redisSlotsConnect(proxy->config,
 			flags, proxylog, on_redis_connected,
 			proxy, proxy->events, proxy);
-	pmDiscoverSetSlots(&redis_discover.module, proxy->slots);
+	if (archive_discovery)
+	    pmDiscoverSetSlots(&redis_discover.module, proxy->slots);
     }
 
-    pmDiscoverSetEventLoop(&redis_discover.module, proxy->events);
-    pmDiscoverSetConfiguration(&redis_discover.module, proxy->config);
-    pmDiscoverSetMetricRegistry(&redis_discover.module, proxy->metrics);
-    pmDiscoverSetup(&redis_discover.module, &redis_discover.callbacks, proxy);
+    if (archive_discovery) {
+	pmDiscoverSetEventLoop(&redis_discover.module, proxy->events);
+	pmDiscoverSetConfiguration(&redis_discover.module, proxy->config);
+	pmDiscoverSetMetricRegistry(&redis_discover.module, proxy->metrics);
+	pmDiscoverSetup(&redis_discover.module, &redis_discover.callbacks, proxy);
+    }
+}
+
+void
+close_redis_module(struct proxy *proxy)
+{
+    if (proxy->slots)
+	redisSlotsFree(proxy->slots);
+    proxy->slots = NULL;
+    if (archive_discovery)
+	pmDiscoverClose(&redis_discover.module);
 }

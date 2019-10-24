@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2012-2018 Red Hat.
+ * Copyright (c) 2012-2019 Red Hat.
  * Copyright (c) 2010 Aconex.  All Rights Reserved.
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -22,6 +22,67 @@
 #include "proc_pid.h"
 #include <sys/stat.h>
 #include <ctype.h>
+
+/*
+ * Parts of the following two functions are based on systemd code, see
+ * https://github.com/systemd/systemd/blob/master/src/basic/unit-name.c
+ *
+ * The license in that code is: SPDX-License-Identifier: LGPL-2.1+
+ */
+static int
+unhexchar(char c) {
+
+    if (c >= '0' && c <= '9')
+	return c - '0';
+
+    if (c >= 'a' && c <= 'f')
+	return c - 'a' + 10;
+
+    if (c >= 'A' && c <= 'F')
+	return c - 'A' + 10;
+
+    return -EINVAL;
+}
+
+/*
+ * Un-escape \\xFF hex escape codes used by systemd in some of the cgroup
+ * instance names. This is done insitu - and necessary because golang http
+ * response parsers don't tolerate the escapes when used in a streamed
+ * chunked encoding sequence. We don't generally want escape sequences in
+ * PCP instance names anyway.
+ */
+static void
+unit_name_unescape(char *name) {
+    char *f, *t;
+    int changed = 0;
+
+    if (name == NULL || strlen(name) < 3)
+	/* no change */
+    	return;
+
+    for (t = f = name; *f; f++) {
+	/* nb: t lags f */
+	if (*f == '-') {
+	    *(t++) = '/';
+	    changed = 1;
+	}
+	else if (f[0] == '\\' && f[1] == 'x') {
+	    int a = unhexchar(f[2]);
+	    int b = unhexchar(f[3]);
+
+	    if (a < 0 || b < 0)
+		return; /* unlikely, unknown escape */
+	    *(t++) = (char) (((uint8_t) a << 4U) | (uint8_t) b);
+	    f += 3;
+	    changed = 1;
+	} else
+	    *(t++) = *f;
+    }
+    *t = '\0';
+
+    if (changed && pmDebugOptions.appl0)
+    	fprintf(stderr, "unit_name_unescape mapped to <%s>\n", name);
+}
 
 static void
 refresh_cgroup_cpus(void)
@@ -333,7 +394,7 @@ cgroup_container(const char *cgroup, char *buf, int buflen, int *key)
 	*key = proc_strings_insert(cid);
 }
 
-static const char *
+static char *
 cgroup_name(const char *path, int offset)
 {
     char *name = (char *)path + offset;
@@ -369,9 +430,8 @@ cgroup_scan(const char *mnt, const char *path, cgroup_refresh_t refresh,
 {
     int length, mntlen = strlen(mnt) + 1;
     DIR *dirp;
-    struct stat sbuf;
     struct dirent *dp;
-    const char *cgname;
+    char *cgname;
     char cgpath[MAXPATHLEN] = { 0 };
 
     if (path[0] == '\0') {
@@ -391,7 +451,7 @@ cgroup_scan(const char *mnt, const char *path, cgroup_refresh_t refresh,
 
     /* descend into subdirectories to find all cgroups */
     while ((dp = readdir(dirp)) != NULL) {
-	if (dp->d_name[0] == '.')
+	if (dp->d_name[0] == '.' || dp->d_type != DT_DIR)
 	    continue;
 	if (path[0] == '\0')
 	    pmsprintf(cgpath, sizeof(cgpath), "%s%s/%s",
@@ -399,10 +459,6 @@ cgroup_scan(const char *mnt, const char *path, cgroup_refresh_t refresh,
 	else
 	    pmsprintf(cgpath, sizeof(cgpath), "%s%s/%s/%s",
 			proc_statspath, mnt, path, dp->d_name);
-	if (stat(cgpath, &sbuf) < 0)
-	    continue;
-	if (!(S_ISDIR(sbuf.st_mode)))
-	    continue;
 
 	cgname = cgroup_name(cgpath, length);
 	if (check_refresh(cgpath + mntlen, container, container_length))
@@ -496,7 +552,7 @@ setup_cpuset(void)
 }
 
 void
-refresh_cpuset(const char *path, const char *name)
+refresh_cpuset(const char *path, char *name)
 {
     pmInDom indom = INDOM(CGROUP_CPUSET_INDOM);
     cgroup_cpuset_t *cpuset;
@@ -504,6 +560,7 @@ refresh_cpuset(const char *path, const char *name)
     char id[MAXCIDLEN];
     int sts;
 
+    unit_name_unescape(name);
     sts = pmdaCacheLookupName(indom, name, NULL, (void **)&cpuset);
     if (sts == PMDA_CACHE_ACTIVE)
 	return;
@@ -563,7 +620,7 @@ read_cpuacct_stats(const char *file, cgroup_cpuacct_t *cap)
 }
 
 static int
-read_percpuacct_usage(const char *file, const char *name)
+read_percpuacct_usage(const char *file, char *name)
 {
     pmInDom indom =  INDOM(CGROUP_PERCPUACCT_INDOM);
     cgroup_percpuacct_t *percpuacct;
@@ -581,6 +638,7 @@ read_percpuacct_usage(const char *file, const char *name)
 	return -ENOMEM;
     }
 
+    unit_name_unescape(name);
     for (cpu = 0; ; cpu++) {
 	value = strtoull(p, &endp, 0);
 	if (*endp == '\0' || endp == p)
@@ -605,7 +663,7 @@ read_percpuacct_usage(const char *file, const char *name)
 }
 
 void
-refresh_cpuacct(const char *path, const char *name)
+refresh_cpuacct(const char *path, char *name)
 {
     pmInDom indom = INDOM(CGROUP_CPUACCT_INDOM);
     cgroup_cpuacct_t *cpuacct;
@@ -613,6 +671,7 @@ refresh_cpuacct(const char *path, const char *name)
     char id[MAXCIDLEN];
     int sts;
 
+    unit_name_unescape(name);
     sts = pmdaCacheLookupName(indom, name, NULL, (void **)&cpuacct);
     if (sts == PMDA_CACHE_ACTIVE)
 	return;
@@ -675,7 +734,7 @@ read_cpu_stats(const char *file, cgroup_cpustat_t *ccp)
 }
 
 void
-refresh_cpusched(const char *path, const char *name)
+refresh_cpusched(const char *path, char *name)
 {
     pmInDom indom = INDOM(CGROUP_CPUSCHED_INDOM);
     cgroup_cpusched_t *cpusched;
@@ -683,6 +742,7 @@ refresh_cpusched(const char *path, const char *name)
     char id[MAXCIDLEN];
     int sts;
 
+    unit_name_unescape(name);
     sts = pmdaCacheLookupName(indom, name, NULL, (void **)&cpusched);
     if (sts == PMDA_CACHE_ACTIVE)
 	return;
@@ -780,7 +840,7 @@ read_memory_stats(const char *file, cgroup_memory_t *cmp)
 }
 
 void
-refresh_memory(const char *path, const char *name)
+refresh_memory(const char *path, char *name)
 {
     pmInDom indom = INDOM(CGROUP_MEMORY_INDOM);
     cgroup_memory_t *memory;
@@ -788,6 +848,7 @@ refresh_memory(const char *path, const char *name)
     char id[MAXCIDLEN];
     int sts;
 
+    unit_name_unescape(name);
     sts = pmdaCacheLookupName(indom, name, NULL, (void **)&memory);
     if (sts == PMDA_CACHE_ACTIVE)
 	return;
@@ -816,7 +877,7 @@ setup_netcls(void)
 }
 
 void
-refresh_netcls(const char *path, const char *name)
+refresh_netcls(const char *path, char *name)
 {
     pmInDom indom = INDOM(CGROUP_NETCLS_INDOM);
     cgroup_netcls_t *netcls;
@@ -824,6 +885,7 @@ refresh_netcls(const char *path, const char *name)
     char id[MAXCIDLEN];
     int sts;
 
+    unit_name_unescape(name);
     sts = pmdaCacheLookupName(indom, name, NULL, (void **)&netcls);
     if (sts == PMDA_CACHE_ACTIVE)
 	return;
@@ -1029,7 +1091,7 @@ read_blkio_devices_value(const char *file, const char *name, int style,
 }
 
 void
-refresh_blkio(const char *path, const char *name)
+refresh_blkio(const char *path, char *name)
 {
     pmInDom indom = INDOM(CGROUP_BLKIO_INDOM);
     cgroup_blkio_t *blkio;
@@ -1037,6 +1099,7 @@ refresh_blkio(const char *path, const char *name)
     char id[MAXCIDLEN];
     int sts;
 
+    unit_name_unescape(name);
     sts = pmdaCacheLookupName(indom, name, NULL, (void **)&blkio);
     if (sts == PMDA_CACHE_ACTIVE)
 	return;

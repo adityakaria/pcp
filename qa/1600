@@ -17,7 +17,6 @@ _check_series
 
 _cleanup()
 {
-    [ -n "$pmlogger_pid" ] && $signal -s TERM $pmlogger_pid
     [ -n "$pmproxy_pid" ] && $signal -s TERM $pmproxy_pid
     [ -n "$options" ] && redis-cli $options shutdown
     cd $here
@@ -112,17 +111,26 @@ log mandatory on default {
     sample
 }
 End-Of-File
+cat >$tmp.pmproxy.conf << End-Of-File
+[discover]
+enabled = true
+[pmseries]
+enabled = true
+End-Of-File
 
 # start long-running pmlogger actively writing archives
-pmlogger -t 0.25 -c $tmp.pmlogger.conf -l $tmp.pmlogger.log $base/archive &
+pmlogger -t 0.25 -T 3sec -c $tmp.pmlogger.conf -l $tmp.pmlogger.log $base/archive &
 pmlogger_pid=$!
+#echo pmlogger=$pmlogger_pid
 pmsleep 0.5
 
 # start pmproxy 
 proxyport=`_find_free_port`
-proxyopts="-p $proxyport -r $redisport"  # -Dseries,discovery
-pmproxy -f -U $username -x $seq.full -l $tmp.pmproxy.log $proxyopts &
+proxyopts="-f -A -p $proxyport -r $redisport -U $username"
+#proxyopts="$pmproxyopts -Dseries,discovery"
+pmproxy -c $tmp.pmproxy.conf -x $seq.full -l $tmp.pmproxy.log $proxyopts &
 pmproxy_pid=$!
+#echo pmproxy=$pmproxy_pid
 
 # check pmproxy has started and is discovering timeseries
 pmcd_wait -h localhost@localhost:$proxyport -v -t 5sec
@@ -154,7 +162,21 @@ series=`pmseries $options sample.double.bin`
 pmseries $options -l $series | _filter_labels | _filter_series
 
 echo "== verify metric values" | tee -a  $seq.full
-pmseries $options sample.ulong.million[samples:2] | _filter_values | _filter_series
+pmseries $options -t sample.ulong.million[samples:2] | _filter_values | _filter_series
+
+# pause until pmlogger exits to prevent confusion when removing archives
+wait $pmlogger_pid
+
+#
+# verify discovery handling of archive deletion
+#
+echo "== verify archive removal" | tee -a  $seq.full
+rm -fr $base
+pmsleep 0.5	# allow filesystem event some time to arrive
+pmcd_wait -h localhost@localhost:$proxyport -v -t 1sec	# pmproxy still up?
+
+echo "== log " >> $seq.full
+cat $tmp.pmproxy.log >> $seq.full
 
 echo "== all done" | tee -a $seq.full
 

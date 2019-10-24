@@ -474,9 +474,6 @@ _match_pkg()
 	    dpkg)
 		    case "$xpect"
 		    in
-			libboost1.[0-9]*-dev)	# e.g. libboost1.65-dev
-			    xpect=libboost-dev
-			    ;;
 			libcoin[0-9]*-dev)		# e.g. libcoin80-dev
 			    xpect=libcoin-dev
 			    ;;
@@ -529,9 +526,6 @@ _match_pkg()
 		    in
 			Coin[0-9]*-devel)		# e.g. Coin3-devel
 			    xpect=Coin-devel
-			    ;;
-			libboost_headers*-devel)	# e.g. libboost_headers1_66_0-devel
-			    xpect=libboost-devel
 			    ;;
 			postgresql[0-9]*)		# e.g. postgresql10
 			    xpect=postgresql
@@ -738,7 +732,7 @@ do
     line=`echo $extra | sed -e 's/.*:\([0-9][0-9]*\)$/\1/'`
     # reduce things like "[lm-sensors (QA optional)]:1189" down to
     # "lm-sensors"
-    # and "[perl-Spreadsheet-ReadSXC or 'perl(Spreadsheet::ReadSXC)' or from cpan(Spreadsheet::ReadSXC) (QA optional)]:601
+    # and "[perl-Spreadsheet-ReadSXC or perl(Spreadsheet::ReadSXC) or from cpan(Spreadsheet::ReadSXC) (QA optional)]:601
     # down to "perl-Spreadsheet-ReadSXC cpan(Spreadsheet::ReadSXC)"
     # and cull the [N/A...] lines
     #
@@ -749,6 +743,7 @@ do
 	    -e 's/\[//' \
 	    -e 's/]//' \
 	    -e "s/'perl([^0]*)'//" \
+	    -e "s/perl([^0]*)//" \
 	    -e 's/([^)]* optional)//' \
 	    -e 's/base [^ ][^ ]* install/base/' \
 	    -e 's/ or / /g' \

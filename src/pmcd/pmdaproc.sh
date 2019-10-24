@@ -60,7 +60,7 @@ _setup_localhost()
 	# on our path
 	#
 	ping --help >$tmp/hlp 2>&1
-	if grep '.-c count' $tmp/hlp >/dev/null 2>&1
+	if grep '.-c count' $tmp/hlp >/dev/null 2>&1 || grep '.-c <count>' $tmp/hlp >/dev/null 2>&1
 	then
 	    __opt='-c 1 localhost'
 	elif grep '.-n count' $tmp/hlp >/dev/null 2>&1
@@ -1037,6 +1037,14 @@ _install()
     then
 	__choose_ipc $pmda_dir
 	__args="-d $domain $__args"
+	# Optionally use $PCP_DEBUG from the environment to set -D options
+	# in pmcd.conf for command line args
+	#
+	if [ -n "$PCP_DEBUG" ]
+	then
+	    __args="-D$PCP_DEBUG $__args"
+	fi
+
     elif [ "$pmda_type" = perl ]
     then
 	type="pipe	$ipc_prot		perl $perl_name"

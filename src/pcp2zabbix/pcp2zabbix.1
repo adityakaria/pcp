@@ -230,9 +230,9 @@ but this option \fIwill\fP override per-metric specifications.
 .TP
 \fB\-a\fR \fIarchive\fR, \fB\-\-archive\fR=\fIarchive\fR
 Performance metric values are retrieved from the set of Performance
-Co-Pilot (PCP) archive log files identified by the argument
-.IR archive ,
-which is a comma-separated list of names, each
+Co-Pilot (PCP) archive log files identified by the
+.I archive
+argument, which is a comma-separated list of names, each
 of which may be the base name of an archive or the name of
 a directory containing one or more archives.
 .TP
@@ -380,7 +380,7 @@ This symbol should be added to a discovery rule, and will define the
 \fB{#PCP.MET.RIC}\fR
 .hy
 LLD macro.
-This macro can inturn be used to define prototype items/triggers/graphs.
+This macro can in turn be used to define prototype items/triggers/graphs.
 The names are adjusted if \fB\-x\fR was given to override the
 \fBpcp.\fR prefix.
 .TP
@@ -542,9 +542,9 @@ for a complete description of the syntax for
 .IR starttime .
 .TP
 \fB\-t\fR \fIinterval\fR, \fB\-\-interval\fR=\fIinterval\fR
-The default update
+Set the reporting
 .I interval
-may be set to something other than the default 1 second.
+to something other than the default 1 second.
 The
 .I interval
 argument follows the syntax described in
@@ -639,7 +639,7 @@ Display usage message and exit.
 Environment variables with the prefix \fBPCP_\fP are used to parameterize
 the file and directory names used by PCP.
 On each installation, the
-file \fB/etc/pcp.conf\fP contains the local values for these variables.
+file \fI/etc/pcp.conf\fP contains the local values for these variables.
 The \fB$PCP_CONF\fP variable may be used to specify an alternative
 configuration file, as described in \fBpcp.conf\fP(5).
 .PP
@@ -666,6 +666,6 @@ For environment variables affecting PCP tools, see \fBpmGetOptions\fP(3).
 .BR zbxpcp (3),
 .BR LOGARCHIVE (5),
 .BR pcp.conf (5),
-.BR pmns (5)
+.BR PMNS (5)
 and
 .BR pmrep.conf (5).

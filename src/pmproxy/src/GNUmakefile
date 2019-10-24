@@ -18,20 +18,26 @@ include $(TOPDIR)/src/include/builddefs
 CMDTARGET = pmproxy$(EXECSUFFIX)
 HFILES = pmproxy.h
 CFILES = pmproxy.c
+XFILES = uv_callback.h uv_callback.c
 
-LCFLAGS = $(PIECFLAGS)
+LCFLAGS = $(PIECFLAGS) -I$(TOPDIR)/src/libpcp_web/src
 LLDFLAGS = $(PIELDFLAGS)
 LLDLIBS	= $(PCP_WEBLIB)
 
 ifeq "$(HAVE_LIBUV)" "true"
-LCFLAGS += $(LIBUVCFLAGS) -DHAVE_LIBUV=1 -I$(TOPDIR)/src/libpcp_web/src
-SERVLETS = series.c grafana.c
-CFILES += server.c http.c pcp.c redis.c $(SERVLETS)
-HFILES += server.h http.h pcp.h
+LCFLAGS += $(LIBUVCFLAGS) -DHAVE_LIBUV=1
+SERVLETS = series.c webapi.c
+CFILES += openmetrics.c server.c http.c pcp.c uv_callback.c redis.c $(SERVLETS)
+HFILES += openmetrics.h server.h http.h pcp.h uv_callback.h
+ifeq "$(HAVE_OPENSSL)" "true"
+LCFLAGS += $(OPENSSLCFLAGS) -DHAVE_OPENSSL=1
+LDFLAGS += $(LIB_FOR_OPENSSL)
+CFILES += secure.c
+endif
 endif
 CFILES += deprecated.c
 
-default:	$(CMDTARGET)
+default:	$(XFILES) $(CMDTARGET)
 
 include $(BUILDRULES)
 
@@ -41,6 +47,9 @@ install:	default
 default_pcp:	default
 
 install_pcp:	install
+
+$(XFILES):
+	$(LN_S) -f $(TOPDIR)/src/external/$@ $@
 
 $(OBJECTS):	$(HFILES) $(TOPDIR)/src/include/pcp/libpcp.h
 

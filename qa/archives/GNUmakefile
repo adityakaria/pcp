@@ -10,7 +10,7 @@ TOPDIR = ../..
 include $(TOPDIR)/src/include/builddefs
 
 TESTDIR = $(PCP_VAR_DIR)/testsuite/archives
-SUBDIRS = multi multi-xz multi-xz-1k
+SUBDIRS = multi multi-xz multi-xz-1k multi-corrupted
 
 # first the special and odd ones
 #
@@ -35,7 +35,7 @@ DEFLATE = small.0.xz small.meta small.index \
 	  pcp-atop.0.xz pcp-atop.meta pcp-atop.index \
 	  pcp-dstat.0.xz pcp-dstat.meta pcp-dstat.index \
 	  pcp-hotatop.0.xz pcp-hotatop.meta pcp-hotatop.index \
-	  pcp-zeroconf.0.gz pcp-zeroconf.meta pcp-zeroconf.index \
+	  pcp-zeroconf.0.xz pcp-zeroconf.meta pcp-zeroconf.index \
 	  value-test.0.xz value-test.meta value-test.index \
 	  coverage.0.xz coverage.meta coverage.index \
 	  bozo-20170904.0.xz bozo-20170904.meta bozo-20170904.index \
@@ -46,7 +46,9 @@ DEFLATE = small.0.xz small.meta small.index \
 	  pcp-pidstat-timezone.index zero_disk_activity.index  \
 	  zero_disk_activity.0.xz zero_disk_activity.meta.xz \
 	  20180416.10.00.meta.xz 20180416.10.00.index 20180416.10.00.0.xz \
-	  20180416.10.00.1.xz 20180416.10.00.2.xz 20180416.10.00.3.xz
+	  20180416.10.00.1.xz 20180416.10.00.2.xz 20180416.10.00.3.xz \
+	  20190628.04.03.0.xz 20190628.04.03.1.xz 20190628.04.03.meta.xz \
+	  20190628.04.03.index
 
 SCRIPTS = mk.diff mk.gap mk.mysql mk.schizo mk.foo+ \
 	  mk.dynmetric mk.instant mk.dyninsts \

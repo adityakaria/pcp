@@ -45,7 +45,7 @@ _pcp_complete()
         arg_regex="-[ahKceASTOstiJ489NP0qQbByYgpXEx]"
     ;;
     pmdumplog)
-        all_args="adehiLlmnrSsTtVvxZz"
+        all_args="adehiLlMmnrSsTtVvxZz"
         arg_regex="-[nSTvZ]"
     ;;
     pmdumptext)
@@ -61,15 +61,15 @@ _pcp_complete()
         arg_regex="-[abchKNnOZ]"
     ;;
     pmlogcheck)
-        all_args="lnSTvwZz"
+        all_args="lmnSTvwZz"
         arg_regex="-[nSTZ]"
     ;;
     pmlogextract)
-        all_args="cdfmSsTvwZz"
+        all_args="cdfmSsTvwxZz"
         arg_regex="-[cSsTvZ]"
     ;;
     pmlogsummary)
-        all_args="aBbFfHIilMmNnpSTVvxZz"
+        all_args="aBbFfHIilMmNnpSsTVvxyZz"
         arg_regex="-[BnpSTZ]"
     ;;
     pmprobe)
@@ -81,8 +81,8 @@ _pcp_complete()
         arg_regex="-[04689ABabcEeFfhiJKlNOoPQqSsTtWwXYyZ]"
     ;;
     pmseries)
-        all_args="acdFghIiLlMmnpqSsV"
-        arg_regex="-[cghp]"
+        all_args="acdFghIiLlMmnpqSstVZ"
+        arg_regex="-[cghpZ]"
     ;;
     pmstore)
         all_args="FfhiKLnV"

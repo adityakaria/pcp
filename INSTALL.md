@@ -173,7 +173,7 @@ Package dependencies come in several flavours:
   installed the build will work, but the resultant packages
   may be missing some features or entire applications, e.g.
   extended authentication, secure connections, service
-  discovery, pmwebd, ...;
+  discovery, REST API, ...;
 
 - QA dependencies - you can ignore these unless you want to
   run the (extensive) PCP QA suite.
@@ -400,6 +400,7 @@ Other PMDAs in the pcp package include:
 - shping - ping critical system services, extract response times
 - trace - for instrumenting arbitrary applications, see pmtrace(1)
 - txmon - transaction and QOS monitoring
+- statsd - StatsD protocol data collector
 
 - sample - for testing
 - simple - example src code if you want to write a new PMDA

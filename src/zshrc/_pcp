@@ -100,6 +100,7 @@ _pcp () {
       "$common_help[@]" \
       "$common_most[@]" \
       "(-g --guimode $exargs)"{-g,--guimode}'[GUI mode with new time control]' \
+      "(-L --local-PMDA -a --archive -h --host -H --hostsfile $exargs)"{-L,--local-PMDA}'[use local DSO PMDAs as metrics source]' \
       "(-p --guiport $exargs)"{-p+,--guiport=}'[specify existing time control port]:port:' \
       "(-n --namespace $exargs)"{-n+,--namespace=}'[specify alternative PMNS]:pmnsfile:_files' \
       - set1 \
@@ -343,6 +344,7 @@ _pcp () {
       "(-i --insts $exargs)"{-i,--insts}'[dump instance domain descriptions]' \
       "(-L $exargs)"-L'[verbose label dump]' \
       "(-l --label $exargs)"{-l,--label}'[dump archive log label]' \
+      "(-M --markrecs $exargs)"{-M,--markrecs}'[report <mark> records]' \
       "(-m --metrics $exargs)"{-m,--metrics}'[dump values of metrics]' \
       "(-n --namespace $exargs)"{-n+,--namespace=}'[specify alternative PMNS]:pmnsfile:_files' \
       "(-r --reverse $exargs)"{-r,--reverse}'[reverse chronological order]' \
@@ -408,7 +410,7 @@ _pcp () {
       "$common_help[@]" \
       "(-m --mechanism $exargs)"{-m+,--mechanism=}'[specify service discovery mechanism]:mechanism:->pmfind_mechs' \
       "(-r --resolve $exargs)"{-r,--resolve}'[resolve addresses]' \
-      "(-s --service $exargs)"{-s+,--service=}'[specify service to find]:service:(all pmcd pmproxy pmwebd)' \
+      "(-s --service $exargs)"{-s+,--service=}'[specify service to find]:service:(all pmcd pmproxy)' \
       "(-t --timeout $exargs)"{-t+,--timeout=}'[set discovery timeout in seconds]:timeout:' \
       "(-q --quiet $exargs)"{-q,--quiet}'[quiet mode]' \
       && return 0
@@ -510,6 +512,7 @@ _pcp () {
     _arguments -C -S -s \
       '(- *)'{-\?,--help}'[display help message]' \
       "(-l --label $exargs)"{-l,--label}'[print archive label]' \
+      "(-m,--metadataonly $exargs)"{-m,--metadataonly}'[skip checking log data volumes]' \
       "(-n --namespace $exargs)"{-n+,--namespace=}'[specify alternative PMNS]:pmnsfile:_files' \
       "(-S --start $exargs)"{-S+,--start=}'[set start of time window]:timespec:' \
       "(-T --finish $exargs)"{-T+,--finish=}'[set end of time window]:timespec:' \
@@ -533,6 +536,7 @@ _pcp () {
       "(-T --finish $exargs)"{-T+,--finish=}'[set end of time window]:timespec:' \
       "(-v $exargs)"-v+'[switch log volumes after this many samples]' \
       "(-w $exargs)"-w'[ignore day/month/year]' \
+      "(-x $exargs)"-x'[skip metrics with mismatched metadata]' \
       "(-Z --timezone -z --hostzone $exargs)"{-Z+,--timezone=}'[set reporting timezone]:timezone:_time_zone' \
       "(-z --hostzone -Z --timezone $exargs)"{-z,--hostzone}'[use metrics source timezone]' \
       '*:archive:->archives' \
@@ -598,10 +602,12 @@ _pcp () {
       "(-n --namespace $exargs)"{-n+,--namespace=}'[specify alternative PMNS]:pmnsfile:_files' \
       "(-N -v --verbose --$exargs)"-N'[suppress warnings]' \
       "(-p --precision $exargs)"{-p+,--precision=}'[set floating point precision]:precision:' \
+      "(-s --sum $exargs)"{-s,--sum}'[only print value sums]' \
       "(-S --start $exargs)"{-S+,--start=}'[set start of time window]:timespec:' \
       "(-T --finish $exargs)"{-T+,--finish=}'[set end of time window]:timespec:' \
       "(-v --verbose -N $exargs)"{-v,--verbose}'[verbose mode]' \
       "(-x -b $exargs)"-x'[print stochastic averages only]' \
+      "(-y --samples $exargs)"-y'[print sample counts]' \
       "(-Z --timezone -z --hostzone $exargs)"{-Z+,--timezone=}'[set reporting timezone]:timezone:_time_zone' \
       "(-z --hostzone -Z --timezone $exargs)"{-z,--hostzone}'[use metrics source timezone]' \
       '1:archive:->archives' \
@@ -671,7 +677,7 @@ _pcp () {
   pmseries)
     _arguments -C -S -s \
       "$common_help[@]" \
-      "(-c --config $exargs)"{-c+,--config=}'[specify config file]:file:_files'
+      "(-c --config $exargs)"{-c+,--config=}'[specify config file]:file:_files' \
       "(-h --host $exargs)"{-h+,--host=}'[specify Redis host]:host:_hosts' \
       "(-p --port $exargs)"{-p+,--port=}'[specify Redis port]:port:' \
       "(-L --load $exargs)"{-L,--load}'[load metadata and data into Redis]' \
@@ -688,6 +694,8 @@ _pcp () {
       "(-n --names $exargs)"{-n,--names}'[report label names]' \
       "(-S --sources $exargs)"{-S,--sources}'[report context for timeseries sources]' \
       "(-s --series $exargs)"{-s,--series}'[report timeseries identifiers]' \
+      "(-t --times $exargs)"{-t,--times}'[report numeric timestamps]' \
+      "(-Z --timezone $exargs)"{-Z+,--timezone=}'[set reporting timezone]:timezone:_time_zone' \
       '1:series:->ts_metrics' \
       && return 0
   ;;

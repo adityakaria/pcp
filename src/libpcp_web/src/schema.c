@@ -22,7 +22,6 @@
 #define STRINGIFY(s)	#s
 #define TO_STRING(s)	STRINGIFY(s)
 #define SCHEMA_VERSION	2
-#define SHA1SZ		20
 
 extern sds		cursorcount;
 static sds		maxstreamlen;
@@ -1064,8 +1063,6 @@ series_stream_append(sds cmd, sds name, sds value)
 static sds
 series_stream_value(sds cmd, sds name, int type, pmAtomValue *avp)
 {
-    unsigned int	bytes;
-    const char		*string;
     sds			value;
 
     if (!avp) {
@@ -1095,21 +1092,9 @@ series_stream_value(sds cmd, sds name, int type, pmAtomValue *avp)
 	break;
 
     case PM_TYPE_STRING:
-	if ((string = avp->cp) == NULL)
-	    string = "<null>";
-	value = sdsnew(string);
-	break;
-
     case PM_TYPE_AGGREGATE:
     case PM_TYPE_AGGREGATE_STATIC:
-	if (avp->vbp != NULL) {
-	    string = avp->vbp->vbuf;
-	    bytes = avp->vbp->vlen - PM_VAL_HDR_SIZE;
-	} else {
-	    string = "<null>";
-	    bytes = strlen(string);
-	}
-	value = sdsnewlen(string, bytes);
+	value = sdsdup(avp->cp);
 	break;
 
     default:
@@ -1393,6 +1378,7 @@ decodeCommandKey(redisSlotsBaton *baton, int index, redisReply *reply)
 
     if ((entry = dictAddRaw(slots->keymap, cmd, NULL)) != NULL) {
 	dictSetSignedIntegerVal(entry, position);
+	sdsfree(cmd);
 	return 0;
     }
     sdsfree(cmd);
@@ -1563,7 +1549,7 @@ redis_load_slots_callback(
     /* no cluster redirection checking is needed for this callback */
     sdsfree(cmd);
 
-    if (testReplyError(reply, REDIS_ENOCLUSTER) == 0) {
+    if (reply && testReplyError(reply, REDIS_ENOCLUSTER) == 0) {
 	/* cluster of Redis instances, following the cluster spec */
 	if (checkArrayReply(baton->info, baton->userdata,
 				reply, "%s %s", CLUSTER, "SLOTS") == 0) {
@@ -1657,6 +1643,7 @@ pmSeriesSetSlots(pmSeriesModule *module, void *slots)
 
     if (data) {
 	data->slots = (redisSlots *)slots;
+	data->shareslots = 1;
 	return 0;
     }
     return -ENOMEM;
@@ -1749,11 +1736,13 @@ pmSeriesSetup(pmSeriesModule *module, void *arg)
     /* fast path for when Redis has been setup already */
     if (data->slots) {
 	module->on_setup(arg);
+	data->shareslots = 1;
     } else {
 	/* establish an initial connection to Redis instance(s) */
 	data->slots = redisSlotsConnect(
 			data->config, SLOTS_VERSION, module->on_info,
 			module->on_setup, arg, data->events, arg);
+	data->shareslots = 0;
     }
     return 0;
 }
@@ -1764,7 +1753,8 @@ pmSeriesClose(pmSeriesModule *module)
     seriesModuleData	*data = (seriesModuleData *)module->privdata;
 
     if (data) {
-	redisSlotsFree(data->slots);
+	if (!data->shareslots)
+	    redisSlotsFree(data->slots);
 	memset(data, 0, sizeof(seriesModuleData));
 	free(data);
     }
@@ -1785,6 +1775,7 @@ pmDiscoverSetSlots(pmDiscoverModule *module, void *slots)
 
     if (data) {
 	data->slots = (redisSlots *)slots;
+	data->shareslots = 1;
 	return 0;
     }
     return -ENOMEM;
@@ -1876,6 +1867,8 @@ pmDiscoverClose(pmDiscoverModule *module)
 
     if (discover) {
 	pmDiscoverUnregister(discover->handle);
+	if (!discover->shareslots)
+	    redisSlotsFree(discover->slots);
 	memset(discover, 0, sizeof(*discover));
 	free(discover);
     }

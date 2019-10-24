@@ -67,12 +67,14 @@ pcp.spec: pcp.spec.in
 	    -e's|@package_configure@|$(PACKAGE_CONFIGURE)|g' \
 	    -e's|@package_distribution@|$(PACKAGE_DISTRIBUTION)|g' \
 	    -e's|@pmda_bcc@|$(PMDA_BCC)|g' \
+	    -e's|@pmda_bpftrace@|$(PMDA_BPFTRACE)|g' \
 	    -e's|@pmda_rpm@|$(PMDA_RPM)|g' \
 	    -e's|@pmda_podman@|$(PMDA_PODMAN)|g' \
+	    -e's|@pmda_statsd@|$(PMDA_STATSD)|g' \
 	    -e's|@pmda_systemd@|$(PMDA_SYSTEMD)|g' \
 	    -e's|@pmda_infiniband@|$(PMDA_INFINIBAND)|g' \
 	    -e's|@pmda_perfevent@|$(PMDA_PERFEVENT)|g' \
-	    -e's|@pmda_prometheus@|$(PMDA_PROMETHEUS)|g' \
+	    -e's|@pmda_openmetrics@|$(PMDA_OPENMETRICS)|g' \
 	    -e's|@pmda_libvirt@|$(PMDA_LIBVIRT)|g' \
 	    -e's|@pmda_lio@|$(PMDA_LIO)|g' \
 	    -e's|@pmda_json@|$(PMDA_JSON)|g' \
@@ -98,20 +100,16 @@ pcp.spec: pcp.spec.in
 	    -e's|@enable_python2@|$(ENABLE_PYTHON2)|g' \
 	    -e's|@enable_python3@|$(ENABLE_PYTHON3)|g' \
 	    -e's|@enable_manager@|$(ENABLE_MANAGER)|g' \
-	    -e's|@enable_webapi@|$(ENABLE_WEBAPI)|g' \
 	    -e's|@enable_selinux@|$(ENABLE_SELINUX)|g' \
 	    -e's|@enable_lzma@|$(ENABLE_LZMA)|g' \
-	    -e's|@have_libmicrohttpd@|$(have_libmicrohttpd)|g' \
-	    -e's|@have_boost@|$(HAVE_BOOST)|g' \
-	    -e's|@have_cairo@|$(have_cairo)|g' \
 	    -e's|@have_python@|$(HAVE_PYTHON)|g' \
-	    -e's|@have_webapps@|$(HAVE_WEBAPPS)|g' \
 	    -e"s|@build_root@|$${DIST_ROOT}|g" \
 	    -e's|@pcp_pmcdconf_path@|$(PCP_PMCDCONF_PATH)|g' \
 	    -e's|@pcp_sysconfig_dir@|$(PCP_SYSCONFIG_DIR)|g' \
 	    -e's|@pcp_sysconf_dir@|$(PCP_SYSCONF_DIR)|g' \
 	    -e's|@pcp_share_dir@|$(PCP_SHARE_DIR)|g' \
 	    -e's|@pcp_log_dir@|$(PCP_LOG_DIR)|g' \
+	    -e's|@pcp_sa_dir@|$(PCP_SA_DIR)|g' \
 	    -e's|@pcp_var_dir@|$(PCP_VAR_DIR)|g' \
 	    -e's|@pcp_etc_dir@|$(PCP_ETC_DIR)|g' \
 	    -e's|@pcp_binadm_dir@|$(PCP_BINADM_DIR)|g' \

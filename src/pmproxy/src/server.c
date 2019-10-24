@@ -1,17 +1,19 @@
 /*
  * Copyright (c) 2018-2019 Red Hat.
  *
- * This library is free software; you can redistribute it and/or modify it
+ * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
  * by the Free Software Foundation; either version 2.1 of the License, or
  * (at your option) any later version.
  *
- * This library is distributed in the hope that it will be useful, but
+ * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public
  * License for more details.
  */
 #include "server.h"
+#include "uv_callback.h"
+#include <assert.h>
 
 void
 proxylog(pmLogLevel level, sds message, void *arg)
@@ -122,7 +124,7 @@ on_buffer_alloc(uv_handle_t *handle, size_t suggested_size, uv_buf_t *buf)
 	buf->len = 0;
 }
 
-void
+static void
 on_client_close(uv_handle_t *handle)
 {
     struct client	*client = (struct client *)handle;
@@ -131,29 +133,64 @@ on_client_close(uv_handle_t *handle)
 	fprintf(stderr, "%s: client %p connection closed\n",
 			"on_client_close", client);
 
-    switch (client->protocol) {
-    case STREAM_PCP:
-	on_pcp_client_close(client);
-	break;
-    case STREAM_HTTP:
-	on_http_client_close(client);
-	break;
-    case STREAM_REDIS:
-	on_redis_client_close(client);
-	break;
-    default:
-	break;
-    }
-
-    /* remove client from the doubly-linked list */
-    if (client->next != NULL)
-	client->next->prev = client->prev;
-    *client->prev = client->next;
-
-    free(client);
+    client_put(client);
 }
 
-static void
+void
+client_get(struct client *client)
+{
+    uv_mutex_lock(&client->mutex);
+    assert(client->refcount);
+    client->refcount++;
+    uv_mutex_unlock(&client->mutex);
+}
+
+void
+client_put(struct client *client)
+{
+    unsigned int	refcount;
+
+    uv_mutex_lock(&client->mutex);
+    assert(client->refcount);
+    refcount = --client->refcount;
+    uv_mutex_unlock(&client->mutex);
+
+    if (refcount == 0) {
+	/* remove client from the doubly-linked list */
+	if (client->next != NULL)
+	    client->next->prev = client->prev;
+	*client->prev = client->next;
+
+	if (client->protocol & STREAM_PCP)
+	    on_pcp_client_close(client);
+	if (client->protocol & STREAM_HTTP)
+	    on_http_client_close(client);
+	if (client->protocol & STREAM_REDIS)
+	    on_redis_client_close(client);
+	if (client->protocol & STREAM_SECURE)
+	    on_secure_client_close(client);
+
+	memset(client, 0, sizeof(*client));
+	free(client);
+    }
+}
+
+int
+client_is_closed(struct client *client)
+{
+    return !client->opened;
+}
+
+void
+client_close(struct client *client)
+{
+    if (client->opened == 1) {
+	client->opened = 0;
+	uv_close((uv_handle_t *)client, on_client_close);
+    }
+}
+
+void
 on_client_write(uv_write_t *writer, int status)
 {
     struct client	*client = (struct client *)writer->handle;
@@ -176,16 +213,31 @@ on_client_write(uv_write_t *writer, int status)
 
     if (pmDebugOptions.af)
 	fprintf(stderr, "%s: %s\n", "on_client_write", uv_strerror(status));
-    uv_close((uv_handle_t *)&client->stream, on_client_close);
+    client_close(client);
+}
+
+void *
+on_write_callback(uv_callback_t *handle, void *data)
+{
+    stream_write_baton	*request = (stream_write_baton *)data;
+
+    uv_write(&request->writer, request->stream,
+		&request->buffer[0], request->nbuffers, request->callback);
+    (void)handle;
+    return 0;
 }
 
 void
 client_write(struct client *client, sds buffer, sds suffix)
 {
-    stream_write_baton	*request = calloc(1, sizeof(stream_write_baton));
+    stream_write_baton	*request;
+    struct proxy	*proxy = client->proxy;
     unsigned int	nbuffers = 0;
 
-    if (request) {
+    if (client_is_closed(client))
+	return;
+
+    if ((request = calloc(1, sizeof(stream_write_baton))) != NULL) {
 	if (pmDebugOptions.af)
 	    fprintf(stderr, "%s: sending %ld bytes [0] to client %p\n",
 			"client_write", (long)sdslen(buffer), client);
@@ -196,10 +248,17 @@ client_write(struct client *client, sds buffer, sds suffix)
 			"client_write", (long)sdslen(suffix), client);
 	    request->buffer[nbuffers++] = uv_buf_init(suffix, sdslen(suffix));
 	}
-	uv_write(&request->writer, (uv_stream_t *)&client->stream,
-		 request->buffer, nbuffers, on_client_write);
+	request->nbuffers = nbuffers;
+	request->callback = on_client_write;
+	request->stream = (uv_stream_t *)&client->stream;
+
+	if (client->stream.secure) {
+	    secure_client_write(client, request);
+	} else {
+	    uv_callback_fire(&proxy->write_callbacks, request, NULL);
+	}
     } else {
-	uv_close((uv_handle_t *)&client->stream, on_client_close);
+	client_close(client);
     }
 }
 
@@ -235,6 +294,33 @@ client_protocol(int key)
     return STREAM_UNKNOWN;
 }
 
+void
+on_protocol_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
+{
+    struct proxy	*proxy = (struct proxy *)stream->data;
+    struct client	*client = (struct client *)stream;
+
+    if (nread < 0)
+	return;
+
+    if ((client->protocol & (STREAM_PCP|STREAM_HTTP|STREAM_REDIS)) == 0)
+	client->protocol |= client_protocol(*buf->base);
+
+    if (client->protocol & STREAM_PCP)
+	on_pcp_client_read(proxy, client, nread, buf);
+    else if (client->protocol & STREAM_HTTP)
+	on_http_client_read(proxy, client, nread, buf);
+    else if (client->protocol & STREAM_REDIS)
+	on_redis_client_read(proxy, client, nread, buf);
+    else {
+	if (pmDebugOptions.af)
+	    fprintf(stderr, "%s: unknown protocol key '%c' (0x%x)"
+			    " - disconnecting client %p\n", "on_protocol_read",
+		    *buf->base, (unsigned int)*buf->base, proxy);
+	client_close(client);
+    }
+}
+
 static void
 on_client_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
 {
@@ -243,29 +329,19 @@ on_client_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
 
     if (nread > 0) {
 	if (client->protocol == STREAM_UNKNOWN)
-	    client->protocol = client_protocol(*buf->base);
-	switch (client->protocol) {
-	case STREAM_PCP:
-	    return on_pcp_client_read(proxy, client, nread, buf);
-	case STREAM_HTTP:
-	    return on_http_client_read(proxy, client, nread, buf);
-	case STREAM_REDIS:
-	    return on_redis_client_read(proxy, client, nread, buf);
-	case STREAM_SECURE:
-	    fprintf(stderr, "%s: SSL/TLS connection initiated by client %p\n",
-			"client_protocol", client);
-	default:
-	    break;
-	}
+	    client->protocol |= client_protocol(*buf->base);
+	if (client->protocol & STREAM_SECURE)
+	    on_secure_client_read(proxy, client, nread, buf);
+	else
+	    on_protocol_read(stream, nread, buf);
+    } else if (nread < 0) {
 	if (pmDebugOptions.af)
-	    fprintf(stderr, "%s: unknown protocol key '%c' (0x%x) - disconnecting"
-			"client %p\n", "on_client_read", *buf->base, (unsigned int)*buf->base, proxy);
-    } else {
-	if (pmDebugOptions.af && nread < 0)
-	    fprintf(stderr, "%s: read error %ld - disconnecting client %p\n",
-			"on_client_read", (long)nread, client);
-	uv_close((uv_handle_t *)stream, on_client_close);
+	    fprintf(stderr, "%s: read error %ld "
+		    "- disconnecting client %p\n", "on_client_read",
+		    (long)nread, client);
+	client_close(client);
     }
+    sdsfree(buf->base);
 }
 
 static void
@@ -290,11 +366,16 @@ on_client_connection(uv_stream_t *stream, int status)
 	fprintf(stderr, "%s: accept new client %p\n",
 			"on_client_connection", client);
 
+    /* prepare per-client lock for reference counting */
+    uv_mutex_init(&client->mutex);
+    client->refcount = 1;
+    client->opened = 1;
+
     status = uv_tcp_init(proxy->events, &client->stream.u.tcp);
     if (status != 0) {
 	fprintf(stderr, "%s: client tcp init failed: %s\n",
 			pmGetProgname(), uv_strerror(status));
-	free(client);
+	client_put(client);
 	return;
     }
 
@@ -302,7 +383,7 @@ on_client_connection(uv_stream_t *stream, int status)
     if (status != 0) {
 	fprintf(stderr, "%s: client tcp init failed: %s\n",
 			pmGetProgname(), uv_strerror(status));
-	free(client);
+	client_put(client);
 	return;
     }
     handle = (uv_handle_t *)&client->stream.u.tcp;
@@ -320,7 +401,7 @@ on_client_connection(uv_stream_t *stream, int status)
     if (status != 0) {
 	fprintf(stderr, "%s: client read start failed: %s\n",
 			pmGetProgname(), uv_strerror(status));
-	uv_close((uv_handle_t *)stream, on_client_close);
+	client_close(client);
     }
 }
 
@@ -376,7 +457,9 @@ open_request_local(struct proxy *proxy, struct server *server,
     handle->data = (void *)proxy;
 
     uv_pipe_bind(&stream->u.local, name);
+#ifdef HAVE_UV_PIPE_CHMOD
     uv_pipe_chmod(&stream->u.local, UV_READABLE);
+#endif
 
     sts = uv_listen((uv_stream_t *)&stream->u.local, maxpending, on_client_connection);
     if (sts != 0) {
@@ -472,6 +555,7 @@ open_request_ports(const char *localpath, int maxpending)
 	sockaddr = (const struct sockaddr *)addrlist[i].addr;
 	family = __pmSockAddrGetFamily(addrlist[i].addr) == AF_INET ?
 					STREAM_TCP4 : STREAM_TCP6;
+	port = __pmSockAddrGetPort(addrlist[i].addr);
 	server = &proxy->servers[n++];
 	server->stream.address = addrlist[i].address;
 	if (open_request_port(proxy, server, family, sockaddr, port, maxpending) == 0)
@@ -497,6 +581,15 @@ fail:
 }
 
 static void
+close_proxy(struct proxy *proxy)
+{
+    close_pcp_module(proxy);
+    close_http_module(proxy);
+    close_redis_module(proxy);
+    close_secure_module(proxy);
+}
+
+static void
 shutdown_ports(void *arg)
 {
     struct proxy	*proxy = (struct proxy *)arg;
@@ -516,10 +609,7 @@ shutdown_ports(void *arg)
     free(proxy->servers);
     proxy->servers = NULL;
 
-    if (proxy->slots) {
-	redisSlotsFree(proxy->slots);
-	proxy->slots = NULL;
-    }
+    close_proxy(proxy);
 
     if (proxy->config) {
 	pmIniFileFree(proxy->config);
@@ -555,10 +645,10 @@ dump_request_ports(FILE *output, void *arg)
 }
 
 /*
- * Attempt to establish a Redis connection straight away;
- * this is achieved via a timer that expires immediately.
- * Once the connection is established (async) modules are
- * again informed via the setup routines.
+ * Initial setup for each of the major sub-systems modules,
+ * which is achieved via a timer that expires immediately.
+ * Once any connections are established (async) modules are
+ * again informed via their individual setup routines.
  */
 static void
 setup_proxy(uv_timer_t *arg)
@@ -566,24 +656,59 @@ setup_proxy(uv_timer_t *arg)
     uv_handle_t		*handle = (uv_handle_t *)arg;
     struct proxy	*proxy = (struct proxy *)handle->data;
 
-    setup_redis_modules(proxy);
-    setup_http_modules(proxy);
-    setup_pcp_modules(proxy);
+    setup_secure_module(proxy);
+    setup_redis_module(proxy);
+    setup_http_module(proxy);
+    setup_pcp_module(proxy);
+}
+
+static void
+prepare_proxy(uv_prepare_t *arg)
+{
+    uv_handle_t		*handle = (uv_handle_t *)arg;
+    struct proxy	*proxy = (struct proxy *)handle->data;
+
+    flush_secure_module(proxy);
+}
+
+static void
+check_proxy(uv_check_t *arg)
+{
+    uv_handle_t		*handle = (uv_handle_t *)arg;
+    struct proxy	*proxy = (struct proxy *)handle->data;
+
+    flush_secure_module(proxy);
 }
 
 static void
 main_loop(void *arg)
 {
     struct proxy	*proxy = (struct proxy *)arg;
-    uv_timer_t		attempt;
+    uv_timer_t		initial_io;
+    uv_prepare_t	before_io;
+    uv_check_t		after_io;
     uv_handle_t		*handle;
 
-    uv_timer_init(proxy->events, &attempt);
-    handle = (uv_handle_t *)&attempt;
+    uv_timer_init(proxy->events, &initial_io);
+    handle = (uv_handle_t *)&initial_io;
     handle->data = (void *)proxy;
-    uv_timer_start(&attempt, setup_proxy, 0, 0);
+    uv_timer_start(&initial_io, setup_proxy, 0, 0);
+
+    uv_prepare_init(proxy->events, &before_io);
+    handle = (uv_handle_t *)&before_io;
+    handle->data = (void *)proxy;
+    uv_prepare_start(&before_io, prepare_proxy);
+
+    uv_check_init(proxy->events, &after_io);
+    handle = (uv_handle_t *)&after_io;
+    handle->data = (void *)proxy;
+    uv_check_start(&after_io, check_proxy);
+
+    uv_callback_init(proxy->events, &proxy->write_callbacks,
+		    on_write_callback, UV_DEFAULT);
 
     uv_run(proxy->events, UV_RUN_DEFAULT);
+    uv_loop_close(proxy->events);
 }
 
 struct pmproxy libuv_pmproxy = {

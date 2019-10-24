@@ -29,6 +29,7 @@ _notrun()
 {
     echo $@ >$here/$seq.notrun
     echo "$seq: [not run] `cat $here/$seq.notrun`"
+    rm -f $here/$seq.pre-avc
     exit 0
 }
 
@@ -869,7 +870,24 @@ _wait_pmlogger_end()
 		    _i=`expr $_i + 1`
 		    if [ "$_i" -ge 100 ]
 		    then
-			echo "_wait_pmlogger_end: failed to see pid $_pid exit after 100 iterations"
+			# may exist, but is defunct so we should treat this
+			# as "ended" ...
+			#
+			$PCP_PS_PROG $PCP_PS_ALL_FLAGS \
+			| $PCP_AWK_PROG >$tmp.pmlogger.defunct '
+$2 == '$_pid' && $0 ~ /defunct/	{ print $3 }'
+			if [ -s "$tmp.pmlogger.defunct" ]
+			then
+			    echo "_wait_pmlogger_end: pid $_pid is defunct" >>$here/$seq.full
+			    if which pstree >/dev/null 2>&1
+			    then
+				pstree -s -A -pua $_pid >>$here/$seq.full 2>&1
+			    else
+				$PCP_PS_PROG $PCP_PS_ALL_FLAGS -p $_pid `cat $tmp.pmlogger.defunct`
+			    fi
+			else
+			    echo "_wait_pmlogger_end: failed to see pid $_pid exit after 100 iterations"
+			fi
 			#debug# set +x
 			return
 		    fi
@@ -1013,6 +1031,41 @@ p
 	    #debug# set +x
 	    break
 	fi
+    done
+}
+
+# Wait for pmproxy to start up on given port
+# Usage: _wait_for_pmproxy [port [logfile]]
+#
+_wait_for_pmproxy()
+{
+    __port=$1
+
+    [ -z "$__port" ] && __port=44322
+
+    count=0
+    while ! $PCP_BINADM_DIR/telnet-probe -c localhost $__port
+    do
+	count=`expr $count + 1`
+	if [ $count -ge 20 ]
+	then
+	    echo "pmproxy failed to start on port $__port"
+	    echo "likely looking processes ..."
+	    $PCP_PS_PROG $PCP_PS_ALL_FLAGS | egrep '[P]ID|[p]mproxy'
+	    if [ -n "$2" ]
+	    then
+		if [ -f "$2" ]
+		then
+		    echo "pmproxy logfile ($2) ..."
+		    cat "$2"
+		else
+		    echo "pmproxy logfile ($2) not created"
+		fi
+	    fi
+	    status=1
+	    exit
+	fi
+	pmsleep 0.1
     done
 }
 
@@ -1169,6 +1222,8 @@ _check_series()
 	_notrun "Redis command line utility not installed"
     which redis-server >/dev/null 2>&1 || \
 	_notrun "Redis server utility not installed"
+    redis-cli ping >/dev/null
+    [ $? -eq 0 ] || _notrun "Redis server not running locally"
     eval `redis-cli info server |
 	grep redis_version: |
 	sed -e 's/:/=/g' -e 's/\..*//g'`
@@ -1257,6 +1312,7 @@ _filter_valgrind()
 	-e '/^suppressed:/d' \
 	-e '/^Reachable blocks (those to which a pointer was found)/d' \
 	-e '/^To see them, rerun with:/d' \
+	-e '/^For lists of detected and suppressed errors,/d' \
 	-e '/^For counts of detected and suppressed errors,/d' \
 	-e '/^ERROR SUMMARY:/s/ (suppressed: [^)]*)/ .../' \
 	-e "s/^All heap blocks were freed -- .*/$noleak/g" \
@@ -1278,6 +1334,7 @@ _filter_helgrind()
 	-e '/^Copyright (/d' \
 	-e '/^Using Valgrind-/d' \
 	-e '/^Command: /d' \
+	-e '/^For lists of detected and suppressed errors,/d' \
 	-e '/^For counts of detected and suppressed errors,/d' \
 	-e '/^Use --history-level=approx or =none/d' \
 	-e '/^the cost of reduced accuracy of conflicting-access/d' \
@@ -1368,13 +1425,15 @@ fi
 
 _run_helgrind()
 {
-    rm -f $tmp.valgrind.err $tmp.valgrind.out $tmp.valgrind.log
-    touch $tmp.valgrind.err $tmp.valgrind.out $tmp.valgrind.log
+    $sudo rm -f $tmp.valgrind.err $tmp.valgrind.out $tmp.valgrind.log
+    touch $tmp.valgrind.err $tmp.valgrind.out
     if [ x"$1" = "x--sudo" ]
     then
+	$sudo touch $tmp.valgrind.log
 	_helgrind_prefix=$sudo
 	shift
     else
+	touch $tmp.valgrind.log
 	_helgrind_prefix=''
     fi
     __version=`valgrind --version | sed -e 's/valgrind-//'`
@@ -2011,7 +2070,6 @@ _change_config()
 	    pmie)	pat=PMIE ;;
 	    pmproxy)	pat=PMPROXY ;;
 	    pmmgr)	pat=PMMGR ;;
-	    pmwebd)	pat=PMWEBD ;;
 	    verbose)	pat="" ;;
 	    *)		pat=$1 ;;
 	esac
@@ -2567,4 +2625,39 @@ _sighup_pmcd()
     # delay for $_signal_delay while pmcd actually does post-SIGHUP work
     #
     $PCP_BINADM_DIR/pmsleep $_signal_delay
+}
+
+# common webapi header filtering
+#
+_webapi_header_filter()
+{
+    tee -a $here/$seq.full \
+    | col -b \
+    | sed \
+	-e 's/^\(Content-Length:\) [0-9][0-9]*/\1 SIZE/g' \
+	-e 's/^\(Date:\).*/\1 DATE/g' \
+	-e 's/\(\"context\":\) [0-9][0-9]*/\1 CTXID/g' \
+	-e '/^Connection: Keep-Alive/d' \
+    | LC_COLLATE=POSIX sort
+}
+
+_webapi_response_filter()
+{
+    tee -a $here/$seq.full \
+    | col -b \
+    | sed -e 's,#[0-9]*,####,g' \
+        -e 's/ connected$//g' \
+        -e '/^\* Adding handle: /d' \
+        -e '/^\* Closing connection ####/d' \
+        -e '/- Conn .*_pipe.*_pipe/d' \
+        -e '/Curl_[\.a-zA-Z0-9]*:/d' \
+        -e 's/::1/LOCALADDR/g' \
+        -e 's/127\.0\.0\.1/LOCALADDR/g' \
+        -e 's/PMWEBD error, .*/PMWEBD error, XXX/g' \
+        -e 's/localhost[\.a-zA-Z0-9]*/LOCALHOST/g' \
+        -e 's/Date:.*/Date: DATE/' \
+	-e 's/\[[0-9][0-9]* bytes data]/[data not shown]/' \
+        -e '/> User-Agent: /d' \
+	-e '/Connection: Keep-Alive/d' \
+    # end
 }

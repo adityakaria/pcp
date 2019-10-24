@@ -1,12 +1,12 @@
 /*
- * Copyright (c) 2018 Red Hat.
+ * Copyright (c) 2018-2019 Red Hat.
  * 
- * This library is free software; you can redistribute it and/or modify it
+ * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published
  * by the Free Software Foundation; either version 2.1 of the License, or
  * (at your option) any later version.
  *
- * This library is distributed in the hope that it will be useful, but
+ * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
  * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public
  * License for more details.
@@ -19,12 +19,22 @@
 #define PDU_MAXLENGTH	(MAXHOSTNAMELEN + HEADER_LENGTH + sizeof("65536")-1)
 
 static void
+client_free(struct client *client)
+{
+    if (client->u.pcp.hostname)
+	sdsfree(client->u.pcp.hostname);
+    if (client->buffer)
+	sdsfree(client->buffer);
+}
+
+static void
 on_server_close(uv_handle_t *handle)
 {
     struct client	*client = (struct client *)handle;
 
     if (pmDebugOptions.pdu)
 	fprintf(stderr, "client %p pmcd connection closed\n", client);
+    client_free(client);
 }
 
 static void
@@ -33,19 +43,20 @@ on_server_write(uv_write_t *writer, int status)
     struct client	*client = (struct client *)writer->handle;
     stream_write_baton	*request = (stream_write_baton *)writer;
 
-    sdsfree(request->buffer[0].base);
     free(request);
-
     if (status != 0)
-	uv_close((uv_handle_t *)&client->stream, on_client_close);
+	client_close(client);
 }
 
 static void
 server_write(struct client *client, sds buffer)
 {
-    stream_write_baton	*request = calloc(1, sizeof(stream_write_baton));
+    stream_write_baton	*request;
 
-    if (request) {
+    if (client_is_closed(client))
+	return;
+
+    if ((request = calloc(1, sizeof(stream_write_baton))) != NULL) {
 	if (pmDebugOptions.pdu)
 	    fprintf(stderr, "%s: %ld bytes from client %p to pmcd\n",
 			"server_write", (long)sdslen(buffer), client);
@@ -53,7 +64,7 @@ server_write(struct client *client, sds buffer)
 	uv_write(&request->writer, (uv_stream_t *)&client->u.pcp.socket,
 		 request->buffer, 1, on_server_write);
     } else {
-	uv_close((uv_handle_t *)&client->stream, on_client_close);
+	client_close(client);
     }
 }
 
@@ -69,18 +80,22 @@ on_server_read(uv_stream_t *stream, ssize_t nread, const uv_buf_t *buf)
 			"on_server_read", client, (long)nread);
 
     /* proxy data through to the client */
-    buffer = sdsnewlen(buf->base, nread);
-    client_write(client, buffer, NULL);
+    if (nread > 0) {
+	buffer = sdsnewlen(buf->base, nread);
+	client_write(client, buffer, NULL);
+    }
+    sdsfree(buf->base);
 }
 
 void
 on_pcp_client_close(struct client *client)
 {
-    if (client->u.pcp.connected)
+    if (client->u.pcp.connected) {
 	uv_close((uv_handle_t *)&client->u.pcp.socket, on_server_close);
-    if (client->buffer)
-	sdsfree(client->buffer);
-    memset(&client->u.pcp, 0, sizeof(client->u.pcp));
+	memset(&client->u.pcp, 0, sizeof(client->u.pcp));
+    } else {
+	client_free(client);
+    }
 }
 
 static void
@@ -95,7 +110,7 @@ on_pcp_client_connect(uv_connect_t *connected, int status)
 			"on_pcp_client_connect", client, status);
 
     if (status != 0) {
-	uv_close((uv_handle_t *)&client->stream, on_client_close);
+	client_close(client);
 	return;
     }
 
@@ -113,7 +128,7 @@ on_pcp_client_connect(uv_connect_t *connected, int status)
     if (status != 0) {
 	fprintf(stderr, "%s: server read start failed: %s\n",
 			"on_pcp_client_connect", uv_strerror(status));
-	uv_close((uv_handle_t *)&client->u.pcp.socket, on_client_close);
+	client_close(client);
     }
 }
 
@@ -242,17 +257,17 @@ on_pcp_client_read(struct proxy *proxy, struct client *client,
 	 */
 	if (client->buffer == NULL && nread >= HEADER_LENGTH) {
 	    if (pcp_consume_client_header(proxy, client, buf->base, nread) < 0)
-		uv_close((uv_handle_t *)&client->stream, on_client_close);
+		client_close(client);
 	} else if (nread < PDU_MAXLENGTH) {
 	    bytes = pcp_consume_bytes(client, buf->base, nread);
 	    if (bytes >= HEADER_LENGTH) {
 		part = client->buffer;
 		if (pcp_consume_client_header(proxy, client, part, bytes) < 0)
-		    uv_close((uv_handle_t *)&client->stream, on_client_close);
+		    client_close(client);
 	    }
 	} else {
 	    /* PDU is too large, tear down the client connection */
-	    uv_close((uv_handle_t *)&client->stream, on_client_close);
+	    client_close(client);
 	}
 	break;
 
@@ -275,7 +290,15 @@ on_pcp_client_read(struct proxy *proxy, struct client *client,
 }
 
 void
-setup_pcp_modules(struct proxy *proxy)
+setup_pcp_module(struct proxy *proxy)
 {
-    /* no PCP protocol modules */
+    /* no extra PCP protocol setup steps needed */
+    (void)proxy;
+}
+
+void
+close_pcp_module(struct proxy *proxy)
+{
+    /* no extra PCP protocol shutdown steps needed */
+    (void)proxy;
 }

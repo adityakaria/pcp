@@ -96,7 +96,7 @@ redisSlotsInit(dict *config, void *events)
 
 	range->master.hostspec = specs[i];
 	range->start = start;
-	range->end = (i == nservers - 1) ? MAXSLOTS : space * i;
+	range->end = (i == nservers - 1) ? MAXSLOTS : space * (i + 1);
 	redisSlotRangeInsert(slots, range);
 
 	start += space + 1;	/* prepare for next iteration */
@@ -157,6 +157,7 @@ redisSlotsClear(redisSlots *pool)
 	range = *(redisSlotRange **)root;
 	tdelete(range, &root, slotsCompare);
 	redisSlotRangeClear(pool, range);
+	free(range);
     }
     pool->slots = NULL;
     pool->nslots = 0;
@@ -206,9 +207,10 @@ redis_connect_callback(const redisAsyncContext *redis, int status)
 {
     if (status == REDIS_OK) {
 	if (pmDebugOptions.series)
-	    fprintf(stderr, "Connected to redis on %s:%d\n",
+	    fprintf(stderr, "Connected to Redis on %s:%d\n",
 			redis->c.tcp.host, redis->c.tcp.port);
 	redisAsyncEnableKeepAlive((redisAsyncContext *)redis);
+	/* TODO: if SSL inject redisSecureConnection() here */
     } else if (pmDebugOptions.series) {
 	if (redis->c.connection_type == REDIS_CONN_UNIX)
 	    fprintf(stderr, "Connecting to %s failed - %s\n",
@@ -296,8 +298,9 @@ redisGetAsyncContextBySlot(redisSlots *slots, unsigned int slot)
     void		*p;
 
     p = tfind((const void *)&s, (void **)&slots->slots, slotsCompare);
-    if ((range = *(redisSlotRange **)p) == NULL)
+    if (p == NULL)
 	return NULL;
+    range = *(redisSlotRange **)p;
 
 #if 1
     server = &range->master;
@@ -455,8 +458,8 @@ redisSlotsProxyConnect(redisSlots *slots, redisInfoCallBack info,
 		key = sdsnew(reply->element[position]->str);
 	}
 	context = redisGetAsyncContext(slots, key, cmd);
-	if (key)
-	    sdsfree(key);
+	sdsfree(key);
+	sdsfree(cmd);
 	cmd = sdsdup(reader->buf);
 	sts = redisAsyncFormattedCommand(context, callback, cmd, arg);
 	if (sts != REDIS_OK)
@@ -468,5 +471,6 @@ redisSlotsProxyConnect(redisSlots *slots, redisInfoCallBack info,
 void
 redisSlotsProxyFree(redisReader *reader)
 {
-    redisReaderFree(reader);
+    if (reader)
+	redisReaderFree(reader);
 }

@@ -29,6 +29,7 @@ ifeq "$(HAVE_LIBUV)" "true"
 build-me:	$(CMDTARGET)
 
 install:	default
+	$(INSTALL) -m 755 $(CMDTARGET) $(PCP_BIN_DIR)/$(CMDTARGET)
 	$(INSTALL) -m 755 -d $(PCP_SYSCONF_DIR)/pmseries
 	# compatibility symlink (share pmproxy config Redis server list)
 	$(INSTALL) -S $(PCP_SYSCONF_DIR)/pmproxy/pmproxy.conf $(PCP_SYSCONF_DIR)/pmseries/pmseries.conf

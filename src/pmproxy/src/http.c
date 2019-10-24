@@ -2,17 +2,19 @@
  * Copyright (c) 2019 Red Hat.
  * 
  * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
- * 
+ * under the terms of the GNU Lesser General Public License as published
+ * by the Free Software Foundation; either version 2.1 of the License, or
+ * (at your option) any later version.
+ *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- * for more details.
+ * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public
+ * License for more details.
  */
+#include <ctype.h>
 #include <assert.h>
 #include "server.h"
+#include "encoding.h"
 #include "dict.h"
 #include "util.h"
 
@@ -20,7 +22,7 @@ static int chunked_transfer_size; /* pmproxy.chunksize, pagesize by default */
 static int smallest_buffer_size = 128;
 
 /*
- * Simple helpers to manage the cumlative addition of JSON
+ * Simple helpers to manage the cumulative addition of JSON
  * (arrays and/or objects) to a buffer.
  */
 sds
@@ -53,9 +55,18 @@ json_pop_suffix(sds suffix)
     /* chop first character - no resize, pad with null terminators */
     if (suffix) {
 	length = sdslen(suffix);
-	memmove(suffix, suffix+1, length-1);
+	// also copy the NUL byte at the end of the c string, therefore use
+	// length instead of length-1
+	memmove(suffix, suffix+1, length);
+	sdssetlen(suffix, length-1); // update length of the sds string accordingly
     }
     return suffix;
+}
+
+sds
+json_string(const sds original)
+{
+    return unicode_encode(original, sdslen(original));
 }
 
 static inline int
@@ -243,6 +254,10 @@ http_response_header(struct client *client, unsigned int length, http_code sts, 
 		parser->http_major, parser->http_minor,
 		sts, http_status_mapping(sts));
 
+    if (sts == HTTP_STATUS_UNAUTHORIZED && client->u.http.realm)
+	header = sdscatfmt(header, "WWW-Authenticate: Basic realm=\"%S\"\r\n",
+				client->u.http.realm);
+
     if ((flags & HTTP_FLAG_STREAMING))
 	header = sdscatfmt(header, "Transfer-encoding: %s\r\n", "chunked");
 
@@ -263,12 +278,6 @@ http_response_header(struct client *client, unsigned int length, http_code sts, 
 }
 
 void
-http_close(struct client *client)
-{
-    uv_close((uv_handle_t *)&client->stream, on_client_close);
-}
-
-void
 http_reply(struct client *client, sds message, http_code sts, http_flags type)
 {
     http_flags		flags = client->u.http.flags;
@@ -277,25 +286,31 @@ http_reply(struct client *client, sds message, http_code sts, http_flags type)
 
     if (flags & HTTP_FLAG_STREAMING) {
 	buffer = sdsempty();
-	if (client->buffer == NULL) {
+	if (client->buffer == NULL) {	/* no data currently accumulated */
 	    pmsprintf(length, sizeof(length), "%lX", (unsigned long)sdslen(message));
 	    buffer = sdscatfmt(buffer, "%s\r\n%S\r\n", length, message);
-	} else {
+	} else if (message != NULL) {
 	    pmsprintf(length, sizeof(length), "%lX",
 				(unsigned long)sdslen(client->buffer) + sdslen(message));
 	    buffer = sdscatfmt(buffer, "%s\r\n%S%S\r\n",
 				length, client->buffer, message);
 	    client->buffer = NULL;
+	} else {
+	    message = buffer;
+	    buffer = NULL;
 	}
 	sdsfree(message);
 	suffix = sdsnewlen("0\r\n\r\n", 5);		/* chunked suffix */
+	client->u.http.flags &= ~HTTP_FLAG_STREAMING;	/* end of stream! */
     } else {	/* regular non-chunked response - headers + response body */
 	if (client->buffer == NULL) {
 	    suffix = message;
-	} else {
+	} else if (message != NULL) {
 	    suffix = sdscatsds(client->buffer, message);
 	    sdsfree(message);
 	    client->buffer = NULL;
+	} else {
+	    suffix = sdsempty();
 	}
 	buffer = http_response_header(client, sdslen(suffix), sts, type);
     }
@@ -305,6 +320,9 @@ http_reply(struct client *client, sds message, http_code sts, http_flags type)
 			client, buffer, suffix);
     }
     client_write(client, buffer, suffix);
+
+    if (http_should_keep_alive(&client->u.http.parser) == 0)
+	client_close(client);
 }
 
 void
@@ -315,10 +333,8 @@ http_error(struct client *client, http_code status, const char *errstr)
     sds			message;
 
     /* on error, we must first discard any accumulated partial result */
-    if (client->buffer != NULL) {
-	sdsfree(client->buffer);
-	client->buffer = NULL;
-    }
+    sdsfree(client->buffer);
+    client->buffer = NULL;
 
     message = sdscatfmt(sdsempty(),
 		"<html>\r\n"
@@ -379,8 +395,8 @@ http_transfer(struct client *client)
 	    client_write(client, buffer, suffix);
 
 	} else if (parser->http_major <= 1) {
-	    buffer = sdsnew("HTTP 1.0 request result exceeds server limits");
-	    http_error(client, HTTP_STATUS_PAYLOAD_TOO_LARGE, buffer);
+	    http_error(client, HTTP_STATUS_PAYLOAD_TOO_LARGE,
+			"HTTP 1.0 request result exceeds server limits");
 	}
     }
 }
@@ -391,6 +407,9 @@ http_add_parameter(dict *parameters,
 {
     sds			pvalue, pname = sdsnewlen(SDS_NOINIT, namelen);
     int			sts;
+
+    if (namelen == 0)
+	return 0;
 
     if ((sts = http_decode(name, namelen, pname)) < 0) {
 	sdsfree(pname);
@@ -425,7 +444,7 @@ http_parameters(const char *url, size_t length, dict **parameters)
     const char		*p, *name, *value = NULL;
     int			sts = 0, namelen = 0, valuelen = 0;
 
-    *parameters = dictCreate(&sdsDictCallBacks, NULL);
+    *parameters = dictCreate(&sdsOwnDictCallBacks, NULL);
     for (p = name = url; p < end; p++) {
 	if (*p == '=') {
 	    namelen = p - name;
@@ -510,21 +529,19 @@ on_url(http_parser *request, const char *offset, size_t length)
 {
     struct client	*client = (struct client *)request->data;
     struct servlet	*servlet;
-    sds			result;
     int			sts;
 
     if ((servlet = servlet_lookup(client, offset, length)) != NULL) {
 	client->u.http.servlet = servlet;
 	if ((sts = client->u.http.parser.status_code) == 0) {
-	    client->u.http.headers = dictCreate(&sdsDictCallBacks, NULL);
+	    client->u.http.headers = dictCreate(&sdsOwnDictCallBacks, NULL);
 	    return 0;
 	}
-	result = sdsnew("failed to process URL");
+	http_error(client, sts, "failed to process URL");
     } else {
-	sts = client->u.http.parser.status_code = HTTP_STATUS_NOT_FOUND;
-	result = sdsnew("no handler for URL");
+	sts = client->u.http.parser.status_code = HTTP_STATUS_BAD_REQUEST;
+	http_error(client, sts, "no handler for URL");
     }
-    http_error(client, sts, result);
     return 0;
 }
 
@@ -546,14 +563,14 @@ static int
 on_header_field(http_parser *request, const char *offset, size_t length)
 {
     struct client	*client = (struct client *)request->data;
-    sds			field = sdsnewlen(offset, length);
-
-    if (pmDebugOptions.http)
-	fprintf(stderr, "Header field: %s (client=%p)\n", field, client);
+    sds			field;
 
     if (client->u.http.parser.status_code || !client->u.http.headers)
 	return 0;	/* already in process of failing connection */
 
+    field = sdsnewlen(offset, length);
+    if (pmDebugOptions.http)
+	fprintf(stderr, "Header field: %s (client=%p)\n", field, client);
     /*
      * Insert this header into the dictionary (name only so far);
      * track this header for associating the value to it (below).
@@ -566,14 +583,40 @@ static int
 on_header_value(http_parser *request, const char *offset, size_t length)
 {
     struct client	*client = (struct client *)request->data;
-    sds			value = sdsnewlen(offset, length);
+    dictEntry		*entry;
+    char		*colon;
+    sds			field, value, decoded;
 
-    if (pmDebugOptions.http)
-	fprintf(stderr, "Header value: %s (client=%p)\n", value, client);
     if (client->u.http.parser.status_code || !client->u.http.headers)
 	return 0;	/* already in process of failing connection */
 
-    dictSetVal(client->u.http.headers, (dictEntry *)client->u.http.privdata, value);
+    value = sdsnewlen(offset, length);
+    if (pmDebugOptions.http)
+	fprintf(stderr, "Header value: %s (client=%p)\n", value, client);
+    entry = (dictEntry *)client->u.http.privdata;
+    dictSetVal(client->u.http.headers, entry, value);
+    field = (sds)dictGetKey(entry);
+
+    /* HTTP Basic Auth for all servlets */
+    if (strncmp(field, "Authorization", 14) == 0 &&
+	strncmp(value, "Basic ", 6) == 0) {
+	decoded = base64_decode(value + 6, sdslen(value) - 6);
+	if (decoded) {
+	    /* extract username:password details */
+	    if ((colon = strchr(decoded, ':')) != NULL) {
+		length = colon - decoded;
+		client->u.http.username = sdsnewlen(decoded, length);
+		length = sdslen(decoded) - length - 1;
+		client->u.http.password = sdsnewlen(colon + 1, length);
+	    } else {
+		client->u.http.parser.status_code = HTTP_STATUS_UNAUTHORIZED;
+	    }
+	    sdsfree(decoded);
+	} else {
+	    client->u.http.parser.status_code = HTTP_STATUS_UNAUTHORIZED;
+	}
+    }
+
     return 0;
 }
 
@@ -582,16 +625,36 @@ on_headers_complete(http_parser *request)
 {
     struct client	*client = (struct client *)request->data;
     struct servlet	*servlet = client->u.http.servlet;
+    int			sts = 0;
 
     if (pmDebugOptions.http)
 	fprintf(stderr, "HTTP headers complete (client=%p)\n", client);
     if (client->u.http.parser.status_code || !client->u.http.headers)
 	return 0;	/* already in process of failing connection */
 
+    if (client->u.http.username) {
+	if (!client->u.http.parameters)
+	    client->u.http.parameters = dictCreate(&sdsOwnDictCallBacks, NULL);
+	http_add_parameter(client->u.http.parameters, "auth.username", 13,
+		client->u.http.username, sdslen(client->u.http.username));
+	if (client->u.http.password)
+	    http_add_parameter(client->u.http.parameters, "auth.password", 13,
+		    client->u.http.password, sdslen(client->u.http.password));
+    }
+
     client->u.http.privdata = NULL;
     if (servlet->on_headers)
-	return servlet->on_headers(client, client->u.http.headers);
-    return 0;
+	sts = servlet->on_headers(client, client->u.http.headers);
+
+    /* HTTP Basic Auth for all servlets */
+    if (__pmServerHasFeature(PM_SERVER_FEATURE_CREDS_REQD)) {
+	if (!client->u.http.username || !client->u.http.password) {
+	    /* request should be resubmitted with authentication */
+	    client->u.http.parser.status_code = HTTP_STATUS_FORBIDDEN;
+	}
+    }
+
+    return sts;
 }
 
 static int
@@ -609,24 +672,35 @@ on_message_complete(http_parser *request)
 {
     struct client	*client = (struct client *)request->data;
     struct servlet	*servlet = client->u.http.servlet;
-    int			sts = 0;
 
     if (pmDebugOptions.http)
 	fprintf(stderr, "HTTP message complete (client=%p)\n", client);
 
     if (servlet && servlet->on_done)
-	sts = servlet->on_done(client);
-
-    return sts;
+	return servlet->on_done(client);
+    return 0;
 }
 
 void
 on_http_client_close(struct client *client)
 {
+    struct servlet	*servlet = client->u.http.servlet;
+
+    if (pmDebugOptions.http)
+	fprintf(stderr, "HTTP client close (client=%p)\n", client);
+
+    if (servlet && servlet->on_release)
+	servlet->on_release(client);
+
     if (client->u.http.headers)
 	dictRelease(client->u.http.headers);
     if (client->u.http.parameters)
 	dictRelease(client->u.http.parameters);
+
+    sdsfree(client->u.http.username);
+    sdsfree(client->u.http.password);
+    sdsfree(client->u.http.realm);
+
     memset(&client->u.http, 0, sizeof(client->u.http));
 }
 
@@ -647,10 +721,9 @@ on_http_client_read(struct proxy *proxy, struct client *client,
     http_parser		*parser = &client->u.http.parser;
     size_t		bytes;
 
-    if (pmDebugOptions.http) {
-	fprintf(stderr, "read %ld bytes from HTTP client %p\n", (long)nread, client);
-	fprintf(stderr, "%.*s", (int)nread, buf->base);
-    }
+    if (pmDebugOptions.http)
+	fprintf(stderr, "read %ld bytes from HTTP client %p\n%.*s",
+			(long)nread, client, (int)nread, buf->base);
 
     if (nread <= 0)
 	return;
@@ -692,17 +765,26 @@ setup:
 }
 
 void
-setup_http_modules(struct proxy *proxy)
+setup_http_module(struct proxy *proxy)
 {
-    extern struct servlet pmseries_servlet;
-    extern struct servlet grafana_servlet;
     sds			option;
 
     if ((option = pmIniFileLookup(config, "pmproxy", "chunksize")) != NULL)
 	chunked_transfer_size = atoi(option);
     else
 	chunked_transfer_size = getpagesize();
+    if (chunked_transfer_size < smallest_buffer_size)
+	chunked_transfer_size = smallest_buffer_size;
 
     register_servlet(proxy, &pmseries_servlet);
-    register_servlet(proxy, &grafana_servlet);
+    register_servlet(proxy, &pmwebapi_servlet);
+}
+
+void
+close_http_module(struct proxy *proxy)
+{
+    struct servlet	*servlet;
+
+    for (servlet = proxy->servlets; servlet != NULL; servlet = servlet->next)
+	servlet->close();
 }

@@ -95,9 +95,9 @@ static proc_uptime_t		proc_uptime;
 static proc_sys_fs_t		proc_sys_fs;
 static proc_sys_kernel_t	proc_sys_kernel;
 static sysfs_kernel_t		sysfs_kernel;
-static shm_info_t              _shm_info;
-static sem_info_t              _sem_info;
-static msg_info_t              _msg_info;
+static shm_info_t		shm_info;
+static sem_info_t		sem_info;
+static msg_info_t		msg_info;
 static login_info_t		login_info;
 static proc_net_softnet_t	proc_net_softnet;
 static proc_buddyinfo_t		proc_buddyinfo;
@@ -4346,33 +4346,53 @@ static pmdaMetric metrictab[] = {
     { PMDA_PMID(CLUSTER_SHM_STAT,5), PM_TYPE_STRING, IPC_STAT_INDOM, PM_SEM_INSTANT, 
     PMDA_PMUNITS(0,0,0,0,0,0) }, },
 
+/* ipc.shm.creator_pid */
+  { NULL,
+    { PMDA_PMID(CLUSTER_SHM_STAT,6), PM_TYPE_U32, IPC_STAT_INDOM, PM_SEM_DISCRETE,
+    PMDA_PMUNITS(0,0,0,0,0,0) }, },
+
+/* ipc.shm.last_access_pid */
+  { NULL,
+    { PMDA_PMID(CLUSTER_SHM_STAT,7), PM_TYPE_U32, IPC_STAT_INDOM, PM_SEM_INSTANT,
+    PMDA_PMUNITS(0,0,0,0,0,0) }, },
+
 /*
  * message queues stat cluster
  */
 
 /* ipc.msg.key */
   { NULL,
-    { PMDA_PMID(CLUSTER_MSG_STAT,0), PM_TYPE_STRING, IPC_MSG_INDOM, PM_SEM_DISCRETE, 
+    { PMDA_PMID(CLUSTER_MSG_STAT,0), PM_TYPE_STRING, IPC_MSG_INDOM, PM_SEM_DISCRETE,
     PMDA_PMUNITS(0,0,0,0,0,0) }, },
 
 /* ipc.msg.owner */
   { NULL,
-    { PMDA_PMID(CLUSTER_MSG_STAT,1), PM_TYPE_STRING, IPC_MSG_INDOM, PM_SEM_DISCRETE, 
+    { PMDA_PMID(CLUSTER_MSG_STAT,1), PM_TYPE_STRING, IPC_MSG_INDOM, PM_SEM_DISCRETE,
     PMDA_PMUNITS(0,0,0,0,0,0) }, },
 
 /* ipc.msg.perms */
   { NULL,
-    { PMDA_PMID(CLUSTER_MSG_STAT,2), PM_TYPE_U32, IPC_MSG_INDOM, PM_SEM_INSTANT, 
+    { PMDA_PMID(CLUSTER_MSG_STAT,2), PM_TYPE_U32, IPC_MSG_INDOM, PM_SEM_INSTANT,
     PMDA_PMUNITS(0,0,0,0,0,0) }, },
 
 /* ipc.msg.msgsz */
   { NULL,
-    { PMDA_PMID(CLUSTER_MSG_STAT,3), PM_TYPE_U32, IPC_MSG_INDOM, PM_SEM_DISCRETE, 
+    { PMDA_PMID(CLUSTER_MSG_STAT,3), PM_TYPE_U32, IPC_MSG_INDOM, PM_SEM_DISCRETE,
     PMDA_PMUNITS(1,0,0,PM_SPACE_BYTE,0,0) }, },
 
 /* ipc.msg.messages */
   { NULL,
-    { PMDA_PMID(CLUSTER_MSG_STAT,4), PM_TYPE_U32, IPC_MSG_INDOM, PM_SEM_INSTANT, 
+    { PMDA_PMID(CLUSTER_MSG_STAT,4), PM_TYPE_U32, IPC_MSG_INDOM, PM_SEM_INSTANT,
+    PMDA_PMUNITS(0,0,0,0,0,0) }, },
+
+/* ipc.msg.last_send_pid */
+  { NULL,
+    { PMDA_PMID(CLUSTER_MSG_STAT,5), PM_TYPE_U32, IPC_MSG_INDOM, PM_SEM_INSTANT,
+    PMDA_PMUNITS(1,0,0,PM_SPACE_BYTE,0,0) }, },
+
+/* ipc.msg.last_recv_pid */
+  { NULL,
+    { PMDA_PMID(CLUSTER_MSG_STAT,6), PM_TYPE_U32, IPC_MSG_INDOM, PM_SEM_INSTANT,
     PMDA_PMUNITS(0,0,0,0,0,0) }, },
 
 /*
@@ -5342,10 +5362,10 @@ static pmdaMetric metrictab[] = {
     PM_INDOM_NULL, PM_SEM_COUNTER, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) }, },
 
     /* kernel.percpu.intr */
-    { NULL, { PMDA_PMID(CLUSTER_INTERRUPTS,4), PM_TYPE_U64,
+    { NULL, { PMDA_PMID(CLUSTER_INTERRUPTS, 4), PM_TYPE_U64,
     CPU_INDOM, PM_SEM_COUNTER, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) }, },
 
-    /* kernel.percpu.interrupts.line[<N>] */
+    /* kernel.percpu.interrupts.line[<0-1023>] */
     { NULL, { PMDA_PMID(CLUSTER_INTERRUPT_LINES, 0), PM_TYPE_U32,
     CPU_INDOM, PM_SEM_COUNTER, PMDA_PMUNITS(0,0,1,0,0,PM_COUNT_ONE) }, },
 
@@ -5760,42 +5780,6 @@ linux_refresh(pmdaExt *pmda, int *need_refresh, int context)
 	refresh_proc_fs_nfsd(&proc_fs_nfsd);
     }
 
-    if (need_refresh[CLUSTER_NET_SOCKSTAT])
-	refresh_proc_net_sockstat(&proc_net_sockstat);
-
-    if (need_refresh[CLUSTER_NET_SOCKSTAT6])
-	refresh_proc_net_sockstat6(&proc_net_sockstat6);
-
-    if (need_refresh[CLUSTER_NET_SNMP])
-	refresh_proc_net_snmp(&_pm_proc_net_snmp);
-
-    if (need_refresh[CLUSTER_NET_SNMP6])
-	refresh_proc_net_snmp6(_pm_proc_net_snmp6);
-
-    if (need_refresh[CLUSTER_NET_RAW])
-	refresh_proc_net_raw(&proc_net_raw);
-
-    if (need_refresh[CLUSTER_NET_RAW6])
-	refresh_proc_net_raw6(&proc_net_raw6);
-
-    if (need_refresh[CLUSTER_NET_TCP])
-	refresh_proc_net_tcp(&proc_net_tcp);
-
-    if (need_refresh[CLUSTER_NET_TCP6])
-	refresh_proc_net_tcp6(&proc_net_tcp6);
-
-    if (need_refresh[CLUSTER_NET_UDP])
-	refresh_proc_net_udp(&proc_net_udp);
-
-    if (need_refresh[CLUSTER_NET_UDP6])
-	refresh_proc_net_udp6(&proc_net_udp6);
-
-    if (need_refresh[CLUSTER_NET_UNIX])
-	refresh_proc_net_unix(&proc_net_unix);
-
-    if (need_refresh[CLUSTER_NET_NETSTAT])
-	refresh_proc_net_netstat(&_pm_proc_net_netstat);
-
     /*
      * Network interface metrics and namespaces are complicated by a
      * need to be in the right namespace at the right time (for /sys
@@ -5807,6 +5791,18 @@ linux_refresh(pmdaExt *pmda, int *need_refresh, int context)
      */
     if (need_refresh[CLUSTER_NET_DEV] ||
 	need_refresh[CLUSTER_NET_ADDR] ||
+	need_refresh[CLUSTER_NET_SOCKSTAT] ||
+	need_refresh[CLUSTER_NET_SOCKSTAT6] ||
+	need_refresh[CLUSTER_NET_SNMP] ||
+	need_refresh[CLUSTER_NET_SNMP6] ||
+	need_refresh[CLUSTER_NET_RAW] ||
+	need_refresh[CLUSTER_NET_RAW6] ||
+	need_refresh[CLUSTER_NET_TCP] ||
+	need_refresh[CLUSTER_NET_TCP6] ||
+	need_refresh[CLUSTER_NET_UDP] ||
+	need_refresh[CLUSTER_NET_UDP6] ||
+	need_refresh[CLUSTER_NET_UNIX] ||
+	need_refresh[CLUSTER_NET_NETSTAT] ||
 	need_refresh[CLUSTER_FILESYS] ||
 	need_refresh[CLUSTER_TMPFS] ||
 	need_refresh[REFRESH_NET_MTU] ||
@@ -5829,20 +5825,89 @@ linux_refresh(pmdaExt *pmda, int *need_refresh, int context)
 	if (need_refresh[REFRESH_NETADDR_IPV6])
 	    need_net_ioctl = 1;
 
-	if (need_refresh[CLUSTER_NET_DEV]) {
+	if (need_refresh[CLUSTER_NET_DEV] ||
+	    need_refresh[CLUSTER_NET_SOCKSTAT] ||
+	    need_refresh[CLUSTER_NET_SOCKSTAT6] ||
+	    need_refresh[CLUSTER_NET_SNMP] ||
+	    need_refresh[CLUSTER_NET_SNMP6] ||
+	    need_refresh[CLUSTER_NET_RAW] ||
+	    need_refresh[CLUSTER_NET_RAW6] ||
+	    need_refresh[CLUSTER_NET_TCP] ||
+	    need_refresh[CLUSTER_NET_TCP6] ||
+	    need_refresh[CLUSTER_NET_UDP] ||
+	    need_refresh[CLUSTER_NET_UDP6] ||
+	    need_refresh[CLUSTER_NET_UNIX] ||
+	    need_refresh[CLUSTER_NET_NETSTAT]) {
+
 	    if ((sts = container_nsenter(cp, LINUX_NAMESPACE_NET, &ns_fds)) < 0)
 		goto done;
-	    refresh_proc_net_dev(netdev, cp);
+
+	    if (need_refresh[CLUSTER_NET_DEV])
+		refresh_proc_net_dev(netdev, cp);
+
+	    if (need_refresh[CLUSTER_NET_SOCKSTAT])
+		refresh_proc_net_sockstat(&proc_net_sockstat);
+
+	    if (need_refresh[CLUSTER_NET_SOCKSTAT6])
+		refresh_proc_net_sockstat6(&proc_net_sockstat6);
+
+	    if (need_refresh[CLUSTER_NET_SNMP])
+		refresh_proc_net_snmp(&_pm_proc_net_snmp);
+
+	    if (need_refresh[CLUSTER_NET_SNMP6])
+		refresh_proc_net_snmp6(_pm_proc_net_snmp6);
+
+	    if (need_refresh[CLUSTER_NET_RAW])
+		refresh_proc_net_raw(&proc_net_raw);
+
+	    if (need_refresh[CLUSTER_NET_RAW6])
+		refresh_proc_net_raw6(&proc_net_raw6);
+
+	    if (need_refresh[CLUSTER_NET_TCP])
+		refresh_proc_net_tcp(&proc_net_tcp);
+
+	    if (need_refresh[CLUSTER_NET_TCP6])
+		refresh_proc_net_tcp6(&proc_net_tcp6);
+
+	    if (need_refresh[CLUSTER_NET_UDP])
+		refresh_proc_net_udp(&proc_net_udp);
+
+	    if (need_refresh[CLUSTER_NET_UDP6])
+		refresh_proc_net_udp6(&proc_net_udp6);
+
+	    if (need_refresh[CLUSTER_NET_UNIX])
+		refresh_proc_net_unix(&proc_net_unix);
+
+	    if (need_refresh[CLUSTER_NET_NETSTAT])
+		refresh_proc_net_netstat(&_pm_proc_net_netstat);
+
 	    container_nsleave(cp, LINUX_NAMESPACE_NET);
 	}
 
-	if ((sts = container_nsenter(cp, LINUX_NAMESPACE_MNT, &ns_fds)) < 0)
-	    goto done;
-	refresh_net_addr_sysfs(netaddr, need_refresh);
-	need_net_ioctl |= refresh_net_sysfs(netdev, need_refresh);
-	if (need_refresh[CLUSTER_FILESYS] || need_refresh[CLUSTER_TMPFS])
-	    refresh_filesys(INDOM(FILESYS_INDOM), INDOM(TMPFS_INDOM), cp);
-	container_nsleave(cp, LINUX_NAMESPACE_MNT);
+	if (need_refresh[CLUSTER_NET_DEV] ||
+	    need_refresh[CLUSTER_FILESYS] ||
+	    need_refresh[CLUSTER_TMPFS] ||
+	    need_refresh[REFRESH_NET_MTU] ||
+	    need_refresh[REFRESH_NET_TYPE] ||
+	    need_refresh[REFRESH_NET_SPEED] ||
+	    need_refresh[REFRESH_NET_DUPLEX] ||
+	    need_refresh[REFRESH_NET_LINKUP] ||
+	    need_refresh[REFRESH_NET_RUNNING] ||
+	    need_refresh[REFRESH_NET_WIRELESS] ||
+	    need_refresh[REFRESH_NETADDR_INET] ||
+	    need_refresh[REFRESH_NETADDR_IPV6] ||
+	    need_refresh[REFRESH_NETADDR_HW]) {
+
+	    if ((sts = container_nsenter(cp, LINUX_NAMESPACE_MNT, &ns_fds)) < 0)
+		goto done;
+
+	    refresh_net_addr_sysfs(netaddr, need_refresh);
+	    need_net_ioctl |= refresh_net_sysfs(netdev, need_refresh);
+	    if (need_refresh[CLUSTER_FILESYS] || need_refresh[CLUSTER_TMPFS])
+		refresh_filesys(INDOM(FILESYS_INDOM), INDOM(TMPFS_INDOM), cp);
+
+	    container_nsleave(cp, LINUX_NAMESPACE_MNT);
+	}
 
 	if (need_net_ioctl) {
 	    if ((sts = container_nsenter(cp, LINUX_NAMESPACE_NET, &ns_fds)) < 0)
@@ -5894,13 +5959,13 @@ linux_refresh(pmdaExt *pmda, int *need_refresh, int context)
         refresh_msg_limits(&msg_limits);
 
     if (need_refresh[CLUSTER_SHM_INFO])
-        refresh_shm_info(&_shm_info);
+        refresh_shm_info(&shm_info);
 
     if (need_refresh[CLUSTER_SEM_INFO])
-        refresh_sem_info(&_sem_info);
+        refresh_sem_info(&sem_info);
 
     if (need_refresh[CLUSTER_MSG_INFO])
-        refresh_msg_info(&_msg_info);
+        refresh_msg_info(&msg_info);
 
     if (need_refresh[CLUSTER_SHM_LIMITS])
         refresh_shm_limits(&shm_limits);
@@ -5933,7 +5998,7 @@ linux_refresh(pmdaExt *pmda, int *need_refresh, int context)
 	refresh_shm_stat(INDOM(IPC_STAT_INDOM));
 
     if (need_refresh[CLUSTER_MSG_STAT])
-	refresh_msg_que(INDOM(IPC_MSG_INDOM));
+	refresh_msg_queue(INDOM(IPC_MSG_INDOM));
 
     if (need_refresh[CLUSTER_SEM_STAT])
 	refresh_sem_array(INDOM(IPC_SEM_INDOM));
@@ -6078,6 +6143,7 @@ linux_fetchCallBack(pmdaMetric *mdesc, unsigned int inst, pmAtomValue *atom)
     net_addr_t		*addrp;
     net_interface_t	*netip;
     scsi_entry_t	*scsi_entry;
+    char		*name;
 
     if (mdesc->m_user != NULL) {
 	/* 
@@ -6463,18 +6529,18 @@ linux_fetchCallBack(pmdaMetric *mdesc, unsigned int inst, pmAtomValue *atom)
 	case 0: /* mem.physmem (in kbytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.MemTotal))
 	    	return 0; /* no values available */
-	    atom->ull = proc_meminfo.MemTotal >> 10;
+	    atom->ull = proc_meminfo.MemTotal;
 	    break;
 	case 1: /* mem.util.used (in kbytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.MemTotal) ||
 	        !MEMINFO_VALID_VALUE(proc_meminfo.MemFree))
 		return 0; /* no values available */
-	    atom->ull = (proc_meminfo.MemTotal - proc_meminfo.MemFree) >> 10;
+	    atom->ull = proc_meminfo.MemTotal - proc_meminfo.MemFree;
 	    break;
 	case 2: /* mem.util.free (in kbytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.MemFree))
 	    	return 0; /* no values available */
-	    atom->ull = proc_meminfo.MemFree >> 10;
+	    atom->ull = proc_meminfo.MemFree;
 	    break;
 	case 3: /* mem.util.shared (in kbytes) */
 	    /*
@@ -6484,43 +6550,43 @@ linux_fetchCallBack(pmdaMetric *mdesc, unsigned int inst, pmAtomValue *atom)
 	     */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.MemShared))
 	    	return 0; /* no values available */
-	    atom->ull = proc_meminfo.MemShared >> 10;
+	    atom->ull = proc_meminfo.MemShared;
 	    break;
 	case 4: /* mem.util.bufmem (in kbytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.Buffers))
 	    	return 0; /* no values available */
-	    atom->ull = proc_meminfo.Buffers >> 10;
+	    atom->ull = proc_meminfo.Buffers;
 	    break;
 	case 5: /* mem.util.cached (in kbytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.Cached))
 	    	return 0; /* no values available */
-	    atom->ull = proc_meminfo.Cached >> 10;
+	    atom->ull = proc_meminfo.Cached;
 	    break;
 	case 6: /* swap.length (in bytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.SwapTotal))
 	    	return 0; /* no values available */
-	    atom->ull = proc_meminfo.SwapTotal;
+	    atom->ull = proc_meminfo.SwapTotal << 10;
 	    break;
 	case 7: /* swap.used (in bytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.SwapTotal) ||
 	        !MEMINFO_VALID_VALUE(proc_meminfo.SwapFree))
 		return 0; /* no values available */
-	    atom->ull = proc_meminfo.SwapTotal - proc_meminfo.SwapFree;
+	    atom->ull = (proc_meminfo.SwapTotal - proc_meminfo.SwapFree) << 10;
 	    break;
 	case 8: /* swap.free (in bytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.SwapFree))
 	    	return 0; /* no values available */
-	    atom->ull = proc_meminfo.SwapFree;
+	    atom->ull = proc_meminfo.SwapFree << 10;
 	    break;
 	case 9: /* hinv.physmem (in mbytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.MemTotal))
 	    	return 0; /* no values available */
-	    atom->ul = proc_meminfo.MemTotal >> 20;
+	    atom->ul = proc_meminfo.MemTotal >> 10;
 	    break;
 	case 10: /* mem.freemem (in kbytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.MemFree))
 	    	return 0; /* no values available */
-	    atom->ull = proc_meminfo.MemFree >> 10;
+	    atom->ull = proc_meminfo.MemFree;
 	    break;
 	case 11: /* hinv.pagesize (in bytes) */
 	    atom->ul = 1 << _pm_pageshift;
@@ -6532,91 +6598,91 @@ linux_fetchCallBack(pmdaMetric *mdesc, unsigned int inst, pmAtomValue *atom)
 	        !MEMINFO_VALID_VALUE(proc_meminfo.Cached) ||
 	        !MEMINFO_VALID_VALUE(proc_meminfo.Buffers))
 		return 0; /* no values available */
-	    sl = (proc_meminfo.MemTotal -
+	    sl = proc_meminfo.MemTotal -
 		 proc_meminfo.MemFree -
 		 proc_meminfo.Cached -
-		 proc_meminfo.Buffers) >> 10;
+		 proc_meminfo.Buffers;
 	    atom->ull = sl >= 0 ? sl : 0;
 	    break;
 	case 13: /* mem.util.swapCached (in kbytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.SwapCached))
 	    	return 0; /* no values available */
-	    atom->ull = proc_meminfo.SwapCached >> 10;
+	    atom->ull = proc_meminfo.SwapCached;
 	    break;
 	case 14: /* mem.util.active (in kbytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.Active))
 	    	return 0; /* no values available */
-	    atom->ull = proc_meminfo.Active >> 10;
+	    atom->ull = proc_meminfo.Active;
 	    break;
 	case 15: /* mem.util.inactive (in kbytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.Inactive))
 	    	return 0; /* no values available */
-	    atom->ull = proc_meminfo.Inactive >> 10;
+	    atom->ull = proc_meminfo.Inactive;
 	    break;
 	case 16: /* mem.util.highTotal (in kbytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.HighTotal))
 	    	return 0; /* no values available */
-	    atom->ull = proc_meminfo.HighTotal >> 10;
+	    atom->ull = proc_meminfo.HighTotal;
 	    break;
 	case 17: /* mem.util.highFree (in kbytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.HighFree))
 	    	return 0; /* no values available */
-	    atom->ull = proc_meminfo.HighFree >> 10;
+	    atom->ull = proc_meminfo.HighFree;
 	    break;
 	case 18: /* mem.util.lowTotal (in kbytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.LowTotal))
 	    	return 0; /* no values available */
-	    atom->ull = proc_meminfo.LowTotal >> 10;
+	    atom->ull = proc_meminfo.LowTotal;
 	    break;
 	case 19: /* mem.util.lowFree (in kbytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.LowFree))
 	    	return 0; /* no values available */
-	    atom->ull = proc_meminfo.LowFree >> 10;
+	    atom->ull = proc_meminfo.LowFree;
 	    break;
 	case 20: /* mem.util.swapTotal (in kbytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.SwapTotal))
 	    	return 0; /* no values available */
-	    atom->ull = proc_meminfo.SwapTotal >> 10;
+	    atom->ull = proc_meminfo.SwapTotal;
 	    break;
 	case 21: /* mem.util.swapFree (in kbytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.SwapFree))
 	    	return 0; /* no values available */
-	    atom->ull = proc_meminfo.SwapFree >> 10;
+	    atom->ull = proc_meminfo.SwapFree;
 	    break;
 	case 22: /* mem.util.dirty (in kbytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.Dirty))
 	    	return 0; /* no values available */
-	    atom->ull = proc_meminfo.Dirty >> 10;
+	    atom->ull = proc_meminfo.Dirty;
 	    break;
 	case 23: /* mem.util.writeback (in kbytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.Writeback))
 	    	return 0; /* no values available */
-	    atom->ull = proc_meminfo.Writeback >> 10;
+	    atom->ull = proc_meminfo.Writeback;
 	    break;
 	case 24: /* mem.util.mapped (in kbytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.Mapped))
 	    	return 0; /* no values available */
-	    atom->ull = proc_meminfo.Mapped >> 10;
+	    atom->ull = proc_meminfo.Mapped;
 	    break;
 	case 25: /* mem.util.slab (in kbytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.Slab))
 	    	return 0; /* no values available */
-	    atom->ull = proc_meminfo.Slab >> 10;
+	    atom->ull = proc_meminfo.Slab;
 	    break;
 	case 26: /* mem.util.committed_AS (in kbytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.Committed_AS))
 	    	return 0; /* no values available */
-	    atom->ull = proc_meminfo.Committed_AS >> 10;
+	    atom->ull = proc_meminfo.Committed_AS;
 	    break;
 	case 27: /* mem.util.pageTables (in kbytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.PageTables))
 	    	return 0; /* no values available */
-	    atom->ull = proc_meminfo.PageTables >> 10;
+	    atom->ull = proc_meminfo.PageTables;
 	    break;
 	case 28: /* mem.util.reverseMaps (in kbytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.ReverseMaps))
 	    	return 0; /* no values available */
-	    atom->ull = proc_meminfo.ReverseMaps >> 10;
+	    atom->ull = proc_meminfo.ReverseMaps;
 	    break;
 	case 29: /* mem.util.cache_clean (in kbytes) */
 	    /* clean=cached-(dirty+writeback) */
@@ -6624,180 +6690,184 @@ linux_fetchCallBack(pmdaMetric *mdesc, unsigned int inst, pmAtomValue *atom)
 	        !MEMINFO_VALID_VALUE(proc_meminfo.Dirty) ||
 	        !MEMINFO_VALID_VALUE(proc_meminfo.Writeback))
 	    	return 0; /* no values available */
-	    sl = (proc_meminfo.Cached -
+	    sl = proc_meminfo.Cached -
 	    	 proc_meminfo.Dirty -
-	    	 proc_meminfo.Writeback) >> 10;
+	    	 proc_meminfo.Writeback;
 	    atom->ull = sl >= 0 ? sl : 0;
 	    break;
 	case 30: /* mem.util.anonpages */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.AnonPages))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.AnonPages >> 10;
+	   atom->ull = proc_meminfo.AnonPages;
 	   break;
 	case 31: /* mem.util.commitLimit (in kbytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.CommitLimit))
 	    	return 0; /* no values available */
-	    atom->ull = proc_meminfo.CommitLimit >> 10;
+	    atom->ull = proc_meminfo.CommitLimit;
 	    break;
 	case 32: /* mem.util.bounce */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.Bounce))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.Bounce >> 10;
+	   atom->ull = proc_meminfo.Bounce;
 	   break;
 	case 33: /* mem.util.NFS_Unstable */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.NFS_Unstable))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.NFS_Unstable >> 10;
+	   atom->ull = proc_meminfo.NFS_Unstable;
 	   break;
 	case 34: /* mem.util.slabReclaimable */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.SlabReclaimable))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.SlabReclaimable >> 10;
+	   atom->ull = proc_meminfo.SlabReclaimable;
 	   break;
 	case 35: /* mem.util.slabUnreclaimable */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.SlabUnreclaimable))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.SlabUnreclaimable >> 10;
+	   atom->ull = proc_meminfo.SlabUnreclaimable;
 	   break;
 	case 36: /* mem.util.active_anon */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.Active_anon))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.Active_anon >> 10;
+	   atom->ull = proc_meminfo.Active_anon;
 	   break;
 	case 37: /* mem.util.inactive_anon */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.Inactive_anon))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.Inactive_anon >> 10;
+	   atom->ull = proc_meminfo.Inactive_anon;
 	   break;
 	case 38: /* mem.util.active_file */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.Active_file))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.Active_file >> 10;
+	   atom->ull = proc_meminfo.Active_file;
 	   break;
 	case 39: /* mem.util.inactive_file */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.Inactive_file))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.Inactive_file >> 10;
+	   atom->ull = proc_meminfo.Inactive_file;
 	   break;
 	case 40: /* mem.util.unevictable */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.Unevictable))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.Unevictable >> 10;
+	   atom->ull = proc_meminfo.Unevictable;
 	   break;
 	case 41: /* mem.util.mlocked */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.Mlocked))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.Mlocked >> 10;
+	   atom->ull = proc_meminfo.Mlocked;
 	   break;
 	case 42: /* mem.util.shmem */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.Shmem))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.Shmem >> 10;
+	   atom->ull = proc_meminfo.Shmem;
 	   break;
 	case 43: /* mem.util.kernelStack */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.KernelStack))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.KernelStack >> 10;
+	   atom->ull = proc_meminfo.KernelStack;
 	   break;
-	case 44: /* mem.util.hugepagesTotal */
+	case 44: /* mem.util.hugepagesTotal (in pages) */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.HugepagesTotal))
 		return 0; /* no values available */
 	   atom->ull = proc_meminfo.HugepagesTotal;
 	   break;
-	case 45: /* mem.util.hugepagesFree */
+	case 45: /* mem.util.hugepagesFree (in pages) */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.HugepagesFree))
 		return 0; /* no values available */
 	   atom->ull = proc_meminfo.HugepagesFree;
 	   break;
-	case 46: /* mem.util.hugepagesRsvd */
+	case 46: /* mem.util.hugepagesRsvd (in pages) */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.HugepagesRsvd))
 		return 0; /* no values available */
 	   atom->ull = proc_meminfo.HugepagesRsvd;
 	   break;
-	case 47: /* mem.util.hugepagesSurp */
+	case 47: /* mem.util.hugepagesSurp (in pages) */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.HugepagesSurp))
 		return 0; /* no values available */
 	   atom->ull = proc_meminfo.HugepagesSurp;
 	   break;
-	case 48: /* mem.util.directMap4k */
+	case 48: /* mem.util.directMap4k (in pages) */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.directMap4k))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.directMap4k >> 10;
+	   atom->ull = proc_meminfo.directMap4k;
 	   break;
-	case 49: /* mem.util.directMap2M */
+	case 49: /* mem.util.directMap2M (in pages) */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.directMap2M))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.directMap2M >> 10;
+	   atom->ull = proc_meminfo.directMap2M;
 	   break;
-	case 50: /* mem.util.vmallocTotal */
+	case 50: /* mem.util.vmallocTotal (in kbytes) */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.VmallocTotal))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.VmallocTotal >> 10;
+	   atom->ull = proc_meminfo.VmallocTotal;
 	   break;
-	case 51: /* mem.util.vmallocUsed */
+	case 51: /* mem.util.vmallocUsed (in kbytes) */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.VmallocUsed))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.VmallocUsed >> 10;
+	   atom->ull = proc_meminfo.VmallocUsed;
 	   break;
-	case 52: /* mem.util.vmallocChunk */
+	case 52: /* mem.util.vmallocChunk (in kbytes) */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.VmallocChunk))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.VmallocChunk >> 10;
+	   atom->ull = proc_meminfo.VmallocChunk;
 	   break;
-	case 53: /* mem.util.mmap_copy */
+	case 53: /* mem.util.mmap_copy (in kbytes) */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.MmapCopy))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.MmapCopy >> 10;
+	   atom->ull = proc_meminfo.MmapCopy;
 	   break;
-	case 54: /* mem.util.quicklists */
+	case 54: /* mem.util.quicklists (in kbytes) */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.Quicklists))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.Quicklists >> 10;
+	   atom->ull = proc_meminfo.Quicklists;
 	   break;
-	case 55: /* mem.util.corrupthardware */
+	case 55: /* mem.util.corrupthardware (in pages) */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.HardwareCorrupted))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.HardwareCorrupted >> 10;
+	   atom->ull = proc_meminfo.HardwareCorrupted;
 	   break;
-	case 56: /* mem.util.anonhugepages */
+	case 56: /* mem.util.anonhugepages (in pages) */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.AnonHugePages))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.AnonHugePages >> 10;
+	   atom->ull = proc_meminfo.AnonHugePages;
 	   break;
-	case 57: /* mem.util.directMap1G */
+	case 57: /* mem.util.directMap1G (in pages) */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.directMap1G))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.directMap1G >> 10;
+	   atom->ull = proc_meminfo.directMap1G;
 	   break;
-	case 58: /* mem.util.available */
+	case 58: /* mem.util.available (in kbytes) */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.MemAvailable))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.MemAvailable >> 10;
+	   atom->ull = proc_meminfo.MemAvailable;
 	   break;
 	case 59: /* hinv.hugepagesize (in bytes) */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.Hugepagesize))
 	    	return 0; /* no values available */
-	    atom->ul = proc_meminfo.Hugepagesize;
+	    atom->ul = (proc_meminfo.Hugepagesize << 10);
 	    break;
-	case 60: /* mem.util.hugepagesTotalBytes */
+	case 60: /* mem.util.hugepagesTotalBytes (in bytes) */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.HugepagesTotal))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.HugepagesTotal * proc_meminfo.Hugepagesize;
+	   atom->ull = proc_meminfo.HugepagesTotal *
+			(proc_meminfo.Hugepagesize << 10);
 	   break;
-	case 61: /* mem.util.hugepagesFreeBytes */
+	case 61: /* mem.util.hugepagesFreeBytes (in bytes) */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.HugepagesFree))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.HugepagesFree * proc_meminfo.Hugepagesize;
+	   atom->ull = proc_meminfo.HugepagesFree *
+			(proc_meminfo.Hugepagesize << 10);
 	   break;
-	case 62: /* mem.util.hugepagesRsvdBytes */
+	case 62: /* mem.util.hugepagesRsvdBytes (in bytes) */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.HugepagesRsvd))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.HugepagesRsvd * proc_meminfo.Hugepagesize;
+	   atom->ull = proc_meminfo.HugepagesRsvd *
+			(proc_meminfo.Hugepagesize << 10);
 	   break;
-	case 63: /* mem.util.hugepagesSurpBytes */
+	case 63: /* mem.util.hugepagesSurpBytes (in bytes) */
 	   if (!MEMINFO_VALID_VALUE(proc_meminfo.HugepagesSurp))
 		return 0; /* no values available */
-	   atom->ull = proc_meminfo.HugepagesSurp * proc_meminfo.Hugepagesize;
+	   atom->ull = proc_meminfo.HugepagesSurp *
+			(proc_meminfo.Hugepagesize << 10);
 	   break;
 	default:
 	    return PM_ERR_PMID;
@@ -7282,7 +7352,7 @@ linux_fetchCallBack(pmdaMetric *mdesc, unsigned int inst, pmAtomValue *atom)
 	    atom->cp = get_machine_info(kernel_uname.machine);
 	    break;
 	case 8: /* hinv.map.cpu_node */
-	    atom->ul = cp->nodeid;
+	    atom->ul = cp->node->nodeid;
 	    break;
 	case 9: /* hinv.cpu.model_name */
 	    if ((i = cp->info.model_name) < 0)
@@ -7309,14 +7379,14 @@ linux_fetchCallBack(pmdaMetric *mdesc, unsigned int inst, pmAtomValue *atom)
     case CLUSTER_SYSFS_DEVICES:
 	switch (item) {
 	case 0: /* hinv.cpu.online */
-	    if (pmdaCacheLookup(INDOM(CPU_INDOM), inst, NULL, NULL) < 0)
+	    if (pmdaCacheLookup(INDOM(CPU_INDOM), inst, &name, NULL) < 0)
 		return PM_ERR_INST;
-	    atom->ul = refresh_sysfs_online(inst, "cpu");
+	    atom->ul = refresh_sysfs_online(name, "cpu");
 	    break;
 	case 1: /* hinv.node.online */
-	    if (pmdaCacheLookup(INDOM(NODE_INDOM), inst, NULL, NULL) < 0)
+	    if (pmdaCacheLookup(INDOM(NODE_INDOM), inst, &name, NULL) < 0)
 		return PM_ERR_INST;
-	    atom->ul = refresh_sysfs_online(inst, "node");
+	    atom->ul = refresh_sysfs_online(name, "node");
 	    break;
 
 	default:
@@ -7392,10 +7462,10 @@ linux_fetchCallBack(pmdaMetric *mdesc, unsigned int inst, pmAtomValue *atom)
     case CLUSTER_SEM_INFO:
 	switch (item) {
 	case 0:	/* ipc.sem.used_sem */
-	    atom->ul = _sem_info.semusz;
+	    atom->ul = sem_info.semusz;
 	    break;
 	case 1:	/* ipc.sem.tot_sem */
-	    atom->ul = _sem_info.semaem;
+	    atom->ul = sem_info.semaem;
 	    break;
 	default:
 	    return PM_ERR_PMID;
@@ -7406,32 +7476,44 @@ linux_fetchCallBack(pmdaMetric *mdesc, unsigned int inst, pmAtomValue *atom)
      * Cluster added by Wu Liming <wulm.fnst@cn.fujitsu.com>
      */
     case CLUSTER_SHM_STAT: {
-	
-        shm_stat_t *shm_stat;
+	shm_stat_t *shmp;
 
-	sts = pmdaCacheLookup(INDOM(IPC_STAT_INDOM), inst, NULL, (void **)&shm_stat);
+	sts = pmdaCacheLookup(INDOM(IPC_STAT_INDOM), inst, NULL, (void **)&shmp);
 	if (sts < 0)
 	    return sts;
 	if (sts != PMDA_CACHE_ACTIVE)
 	    return PM_ERR_INST;
 	switch (item) {
 	case 0:	/* ipc.shm.key */
-	    atom->cp = (char *)shm_stat->shm_key;
+	    atom->cp = (char *)shmp->keyid;
 	    break;
 	case 1:	/* ipc.shm.owner */
-	    atom->cp = (char *)shm_stat->shm_owner;
+	    atom->cp = (char *)shmp->owner;
 	    break;
 	case 2:	/* ipc.shm.perms */
-	    atom->ul = shm_stat->shm_perms;
+	    atom->ul = shmp->perms;
 	    break;
 	case 3:	/* ipc.shm.segsz */
-	    atom->ul = shm_stat->shm_bytes;
+	    atom->ul = shmp->bytes;
 	    break;
 	case 4:	/* ipc.shm.nattch */
-	    atom->ul = shm_stat->shm_nattch;
+	    atom->ul = shmp->nattach;
 	    break;
 	case 5:	/* ipc.shm.status */
-	    atom->cp = (char *)shm_stat->shm_status;
+	    if (shmp->dest && shmp->locked)
+		atom->cp =  "dest locked";
+	    else if (shmp->locked)
+		atom->cp = "locked";
+	    else if (shmp->dest)
+		atom->cp = "dest";
+	    else
+		atom->cp = "";
+	    break;
+	case 6:	/* ipc.shm.creator_pid */
+	    atom->ul = shmp->cpid;
+	    break;
+	case 7:	/* ipc.shm.last_access_pid */
+	    atom->ul = shmp->lpid;
 	    break;
 	default:
 	    return PM_ERR_PMID;
@@ -7440,29 +7522,34 @@ linux_fetchCallBack(pmdaMetric *mdesc, unsigned int inst, pmAtomValue *atom)
      }
 
     case CLUSTER_MSG_STAT: {
-	
-        msg_que_t *msg_que;
+	msg_queue_t *msgq;
 
-	sts = pmdaCacheLookup(INDOM(IPC_MSG_INDOM), inst, NULL, (void **)&msg_que);
+	sts = pmdaCacheLookup(INDOM(IPC_MSG_INDOM), inst, NULL, (void **)&msgq);
 	if (sts < 0)
 	    return sts;
 	if (sts != PMDA_CACHE_ACTIVE)
 	    return PM_ERR_INST;
 	switch (item) {
 	case 0:	/* ipc.msg.key */
-	    atom->cp = (char *)msg_que->msg_key;
+	    atom->cp = (char *)msgq->keyid;
 	    break;
 	case 1:	/* ipc.msg.owner */
-	    atom->cp = (char *)msg_que->msg_owner;
+	    atom->cp = (char *)msgq->owner;
 	    break;
 	case 2:	/* ipc.msg.perms */
-	    atom->ul = msg_que->msg_perms;
+	    atom->ul = msgq->perms;
 	    break;
 	case 3:	/* ipc.msg.msgsz */
-	    atom->ul = msg_que->msg_bytes;
+	    atom->ul = msgq->bytes;
 	    break;
-	case 4:	/* ipc.shm.messages */
-	    atom->ul = msg_que->messages;
+	case 4:	/* ipc.msg.messages */
+	    atom->ul = msgq->messages;
+	    break;
+	case 5:	/* ipc.msg.last_send_pid */
+	    atom->ul = msgq->lspid;
+	    break;
+	case 6:	/* ipc.msg.last_recv_pid */
+	    atom->ul = msgq->lrpid;
 	    break;
 	default:
 	    return PM_ERR_PMID;
@@ -7471,26 +7558,25 @@ linux_fetchCallBack(pmdaMetric *mdesc, unsigned int inst, pmAtomValue *atom)
      }
 
     case CLUSTER_SEM_STAT: {
-	
-        sem_array_t *sem_arr;
+	sem_array_t *semp;
 
-	sts = pmdaCacheLookup(INDOM(IPC_SEM_INDOM), inst, NULL, (void **)&sem_arr);
+	sts = pmdaCacheLookup(INDOM(IPC_SEM_INDOM), inst, NULL, (void **)&semp);
 	if (sts < 0)
 	    return sts;
 	if (sts != PMDA_CACHE_ACTIVE)
 	    return PM_ERR_INST;
 	switch (item) {
 	case 0:	/* ipc.sem.key */
-	    atom->cp = (char *)sem_arr->sem_key;
+	    atom->cp = (char *)semp->keyid;
 	    break;
 	case 1:	/* ipc.sem.owner */
-	    atom->cp = (char *)sem_arr->sem_owner;
+	    atom->cp = (char *)semp->owner;
 	    break;
 	case 2:	/* ipc.sem.perms */
-	    atom->ul = sem_arr->sem_perms;
+	    atom->ul = semp->perms;
 	    break;
 	case 3:	/* ipc.sem.nsems */
-	    atom->ul = sem_arr->nsems;
+	    atom->ul = semp->nsems;
 	    break;
 	default:
 	    return PM_ERR_PMID;
@@ -7541,22 +7627,22 @@ linux_fetchCallBack(pmdaMetric *mdesc, unsigned int inst, pmAtomValue *atom)
     case CLUSTER_SHM_INFO:
 	switch (item) {
 	case 0: /* ipc.shm.tot */
-	    atom->ul = _shm_info.shm_tot;
+	    atom->ul = shm_info.shm_tot;
 	    break;
 	case 1: /* ipc.shm.rss */
-	    atom->ul = _shm_info.shm_rss;
+	    atom->ul = shm_info.shm_rss;
 	    break;
 	case 2: /* ipc.shm.swp */
-	    atom->ul = _shm_info.shm_swp;
+	    atom->ul = shm_info.shm_swp;
 	    break;
 	case 3: /* ipc.shm.used_ids */
-	    atom->ul = _shm_info.used_ids;
+	    atom->ul = shm_info.used_ids;
 	    break;
 	case 4: /* ipc.shm.swap_attempts */
-	    atom->ul = _shm_info.swap_attempts;
+	    atom->ul = shm_info.swap_attempts;
 	    break;
 	case 5: /* ipc.shm.swap_successes */
-	    atom->ul = _shm_info.swap_successes;
+	    atom->ul = shm_info.swap_successes;
 	    break;
 	default:
 	    return PM_ERR_PMID;
@@ -7569,13 +7655,13 @@ linux_fetchCallBack(pmdaMetric *mdesc, unsigned int inst, pmAtomValue *atom)
     case CLUSTER_MSG_INFO:
 	switch (item) {
 	case 0:	/* ipc.msg.used_queues */
-	    atom->ul = _msg_info.msgpool;
+	    atom->ul = msg_info.msgpool;
 	    break;
 	case 1:	/* ipc.msg.tot_msg */
-	    atom->ul = _msg_info.msgmap;
+	    atom->ul = msg_info.msgmap;
 	    break;
 	case 2:	/* ipc.msg.tot_bytes */
-	    atom->ul = _msg_info.msgtql;
+	    atom->ul = msg_info.msgtql;
 	    break;
 	default:
 	    return PM_ERR_PMID;
@@ -7789,19 +7875,19 @@ linux_fetchCallBack(pmdaMetric *mdesc, unsigned int inst, pmAtomValue *atom)
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.Hugepagesize))
 	    	return 0; /* no values available */
 	    sts = linux_table_lookup("HugePages_Total:", np->meminfo, &atom->ull);
-	    atom->ull *= proc_meminfo.Hugepagesize;
+	    atom->ull *= (proc_meminfo.Hugepagesize << 10);
 	    break;
 	case 40: /* mem.numa.util.hugepagesFreeBytes */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.Hugepagesize))
 	    	return 0; /* no values available */
 	    sts = linux_table_lookup("HugePages_Free:", np->meminfo, &atom->ull);
-	    atom->ull *= proc_meminfo.Hugepagesize;
+	    atom->ull *= (proc_meminfo.Hugepagesize << 10);
 	    break;
 	case 41: /* mem.numa.util.hugepagesSurpBytes */
 	    if (!MEMINFO_VALID_VALUE(proc_meminfo.Hugepagesize))
 	    	return 0; /* no values available */
 	    sts = linux_table_lookup("HugePages_Surp:", np->meminfo, &atom->ull);
-	    atom->ull *= proc_meminfo.Hugepagesize;
+	    atom->ull *= (proc_meminfo.Hugepagesize << 10);
 	    break;
 
 	default:
@@ -8058,7 +8144,7 @@ linux_fetchCallBack(pmdaMetric *mdesc, unsigned int inst, pmAtomValue *atom)
 	return PM_ERR_PMID;
     }
 
-    return 1;
+    return PMDA_FETCH_STATIC;
 }
 
 
@@ -8622,7 +8708,8 @@ linux_init(pmdaInterface *dp)
 	}
 	if (metrictab[i].m_desc.type == PM_TYPE_NOSUPPORT)
 	    fprintf(stderr, "Bad kernel metric descriptor type (%u.%u)\n",
-			    pmID_cluster(metrictab[i].m_desc.pmid), pmID_item(metrictab[i].m_desc.pmid));
+			    pmID_cluster(metrictab[i].m_desc.pmid),
+			    pmID_item(metrictab[i].m_desc.pmid));
     }
 
     nindoms = sizeof(indomtab)/sizeof(indomtab[0]);

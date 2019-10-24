@@ -116,7 +116,7 @@ class DstatTerminal:
             termios.TIOCGWINSZ
         except:
             try:
-                import curses
+                import curses # pylint: disable=import-outside-toplevel
                 curses.setupterm()
                 curses.tigetnum('lines')
                 curses.tigetnum('cols')
@@ -131,7 +131,7 @@ class DstatTerminal:
         """Return the dynamic terminal geometry"""
         if not self.termsize[0]:
             try:
-                import curses
+                import curses # pylint: disable=import-outside-toplevel
                 if self.termsize[1] == 1:
                     s = struct.pack('HHHH', 0, 0, 0, 0)
                     x = fcntl.ioctl(sys.stdout.fileno(), termios.TIOCGWINSZ, s)
@@ -149,7 +149,7 @@ class DstatTerminal:
         """Return whether the system can use colors or not"""
         if sys.stdout.isatty():
             try:
-                import curses
+                import curses # pylint: disable=import-outside-toplevel
                 curses.setupterm()
                 if curses.tigetnum('colors') < 0:
                     return False
@@ -178,7 +178,7 @@ class DstatTerminal:
             return
         if term[:5] != 'xterm' and term[:6] != 'screen':
             return
-        import getpass
+        import getpass # pylint: disable=import-outside-toplevel
         user = getpass.getuser()
         host = context.pmGetContextHostName()
         host = host.split('.')[0]
@@ -349,7 +349,7 @@ class DstatPlugin(object):
 
     def csvtitle(self):
         if self.grouptype is None:
-            label = '"' + self.label + '"'
+            label = '"' + self.label + '"' + CHAR['sep'] * (len(self.names) - 1)
             return label
         ret = ''
         ilist = self.instlist()
@@ -373,8 +373,6 @@ class DstatPlugin(object):
             return ret
         ilist = self.instlist()
         for i, name in enumerate(ilist):
-            if i > 0:
-                ret = ret + CHAR['sep']
             name = self.label.replace('%I', name)
             for j, nick in enumerate(self.names):
                 if j > 0 or i > 0:
@@ -405,6 +403,14 @@ class DstatTool(object):
         """ Construct object, prepare for command line handling """
         global op
         op = self
+
+        # Avoid tracedump with --version and non-existing --archive
+        if '--version' in arguments and 'PCP_ARCHIVE' in os.environ:
+            if not os.path.exists(os.environ['PCP_ARCHIVE']) and \
+               not os.path.exists(os.environ['PCP_ARCHIVE'] + '.index'):
+                sys.stderr.write(os.path.basename(sys.argv[0]))
+                sys.stderr.write(": No such file or directory\n")
+                sys.exit(1)
 
         self.inittime = time.time()
         self.context = None
@@ -461,6 +467,7 @@ class DstatTool(object):
         self.color = None
         self.debug = False
         self.verify = False
+        self.show_conf = False
         self.header = 1
         self.output = False
         self.update = True
@@ -701,7 +708,7 @@ class DstatTool(object):
         opts = pmapi.pmOptions()
         opts.pmSetOptionCallback(self.option)
         opts.pmSetOverrideCallback(self.option_override)
-        opts.pmSetShortOptions("acC:dD:fghiI:lmnN:o:pqrsS:tT:vVy?")
+        opts.pmSetShortOptions("acC:dD:fghiI:lmnN:o:pqrsS:tTvVy?")
         opts.pmSetShortUsage("[-afv] [options...] [delay [count]]")
         opts.pmSetLongOptionText('Versatile tool for generating system resource statistics')
 
@@ -777,68 +784,78 @@ class DstatTool(object):
             return 1
         return 0
 
+    def append_plugins(self, plugins):
+        """ Activate a list of plugins, checking if already active first """
+        for plugin in plugins:
+            self.append_plugin(plugin)
+
+    def append_plugin(self, plugin):
+        """ Activate a single plugin, checking if already active first """
+        if plugin not in self.plugins:
+            self.plugins.append(plugin)
+
     def option(self, opt, arg, index):
         """ Perform setup for an individual command line option """
         if opt in ['dbg']:
             self.debug = True
         elif opt in ['c']:
-            self.plugins.append('cpu')
+            self.append_plugin('cpu')
         elif opt in ['C']:
             insts = arg.split(',')
             self.cpulist = sorted(['cpu' + str(x) for x in insts if x != 'total'])
             if 'total' in insts:
                 self.cpulist.append('total')
         elif opt in ['d']:
-            self.plugins.append('disk')
+            self.append_plugin('disk')
         elif opt in ['D']:
             insts = arg.split(',')
             self.disklist = sorted([x for x in insts if x != 'total'])
             if 'total' in insts:
                 self.disklist.append('total')
         elif opt in ['--filesystem']:
-            self.plugins.append('fs')
+            self.append_plugin('fs')
         elif opt in ['g']:
-            self.plugins.append('page')
+            self.append_plugin('page')
         elif opt in ['i']:
-            self.plugins.append('int')
+            self.append_plugin('int')
         elif opt in ['I']:
             insts = arg.split(',')
             self.intlist = sorted(['line' + str(x) for x in insts if x != 'total'])
             if 'total' in insts:
                 self.intlist.append('total')
         elif opt in ['l']:
-            self.plugins.append('load')
+            self.append_plugin('load')
         elif opt in ['m']:
-            self.plugins.append('mem')
+            self.append_plugin('mem')
         elif opt in ['n']:
-            self.plugins.append('net')
+            self.append_plugin('net')
         elif opt in ['N']:
             insts = arg.split(',')
             self.netlist = sorted([x for x in insts if x != 'total'])
             if 'total' in insts:
                 self.netlist.append('total')
         elif opt in ['p']:
-            self.plugins.append('proc')
+            self.append_plugin('proc')
         elif opt in ['r']:
-            self.plugins.append('io')
+            self.append_plugin('io')
         elif opt in ['s']:
-            self.plugins.append('swap')
+            self.append_plugin('swap')
         elif opt in ['S']:
             self.swaplist = list(['/dev/' + str(x) for x in arg.split(',')])
         elif opt in ['t']:
-            self.plugins.append('time')
+            self.append_plugin('time')
         elif opt in ['T']:
-            self.plugins.append('epoch')
+            self.append_plugin('epoch')
         elif opt in ['y']:
-            self.plugins.append('sys')
+            self.append_plugin('sys')
         elif opt in ['a', 'all']:
-            self.plugins += ['cpu', 'disk', 'net', 'page', 'sys']
+            self.append_plugins(['cpu', 'disk', 'net', 'page', 'sys'])
         elif opt in ['v', 'vmstat']:
-            self.plugins += ['proc', 'mem', 'page', 'disk', 'sys', 'cpu']
+            self.append_plugins(['proc', 'mem', 'page', 'disk', 'sys', 'cpu'])
         elif opt in ['f', 'full']:
             self.full = True
         elif opt in ['all-plugins']:
-            self.plugins += self.allplugins
+            self.append_plugins(self.allplugins)
         elif opt in ['bits']:
             self.bits = True
         elif opt in ['bw', 'black-on-white', 'blackonwhite']:
@@ -851,6 +868,7 @@ class DstatTool(object):
         elif opt in ['integer']:
             self.integer = True
         elif opt in ['list']:
+            self.show_conf = True
             self.show_plugins()
             sys.exit(0)
         elif opt in ['nocolor']:
@@ -867,14 +885,15 @@ class DstatTool(object):
             self.profile = 'dstat_profile.log'
         elif opt in ['q']:
             self.verify = True
-        elif opt in ['h']:
+        elif opt in ['h', '?']:
             self.usage()
         elif opt in ['V', 'version']:
+            self.show_conf = True
             self.show_version()
             self.show_plugins()
             sys.exit(0)
         elif opt != '':
-            self.plugins.append(opt)
+            self.append_plugin(opt)
         else:
             raise pmapi.pmUsageErr()
 
@@ -1072,6 +1091,18 @@ class DstatTool(object):
         return ret, c
 
     @staticmethod
+    def showtime(plugin, stamp):
+        "Format a sample time stamp"
+        value = ''
+        if plugin.name in ['epoch', 'epoch-adv']:    # time in seconds
+            value = str(int(stamp.value))
+        elif plugin.name in ['time', 'time-adv']:    # formatted time
+            value = stamp().strftime(TIMEFMT)
+        if plugin.name in ['epoch-adv', 'time-adv']: # with milliseconds
+            value = value + '.' + str(stamp.value.tv_usec * 1000)[:3]
+        return value
+
+    @staticmethod
     def tchg(var, width):
         "Convert time string to given length"
         ret = '%2dh%02d' % (var / 60, var % 60)
@@ -1085,14 +1116,9 @@ class DstatTool(object):
 
     def tshow(self, plugin, stamp):
         "Display sample time stamp"
-        if plugin.name in ['epoch', 'epoch-adv']:    # time in seconds
-            value = str(int(stamp.value))
-        elif plugin.name in ['time', 'time-adv']:    # formatted time
-            value = stamp().strftime(TIMEFMT)
-        if plugin.name in ['epoch-adv', 'time-adv']: # with milliseconds
-            value = value + '.' + str(stamp.value.tv_usec * 1000)[:3]
+        value = self.showtime(plugin, stamp)
         line = self.cprint(value, NOUNITS, 's', None, plugin.width, None)
-        #sys.stderr.write("tshow result line:\n%s%s\n" % (line, THEME['default']))
+        #sys.stderr.write("tshow result:\n%s%s\n" % (line, THEME['default']))
         return line
 
     def mshow(self, plugin, index, result):
@@ -1138,7 +1164,13 @@ class DstatTool(object):
                 line = line + sep
             line = line + self.roundcsv(value)
             count += 1
-        #sys.stderr.write("mshow result line:\n%s%s\n" % (line, THEME['default']))
+        #sys.stderr.write("mshowcsv result:\n%s%s\n" % (line, THEME['default']))
+        return line
+
+    def tshowcsv(self, plugin, stamp):
+        value = self.showtime(plugin, stamp)
+        line = value.ljust(plugin.width)
+        #sys.stderr.write("tshowcsv result:\n%s%s\n" % (line, THEME['default']))
         return line
 
     @staticmethod
@@ -1294,12 +1326,12 @@ class DstatTool(object):
             else:
                 return THEME['error'] + '-'.rjust(width) + THEME['default']
 
-        if base != 1024:
-            units = (CHAR['space'], 'k', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y')
-        elif op.bits and printtype in ('b', ):
+        if op.bits and printtype in ('b', ):
             units = ('b', 'k', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y')
             base = 1000
             value = value * 8.0
+        elif base != 1024:
+            units = (CHAR['space'], 'k', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y')
         else:
             units = ('B', 'k', 'M', 'G', 'T', 'P', 'E', 'Z', 'Y')
 
@@ -1318,7 +1350,7 @@ class DstatTool(object):
         #sys.stderr.write("colorstep: %s\n" % str(colorstep))
 
         ### Convert value to string given base and field-length
-        if op.integer and printtype in ('b', 'd', 'p' 'f'):
+        if op.integer and printtype in ('b', 'd', 'p', 'f'):
             ret, c = self.dchg(value, width, base)
         elif op.float and printtype in ('b', 'd', 'p', 'f'):
             ret, c = self.fchg(value, width, base)
@@ -1387,14 +1419,14 @@ class DstatTool(object):
         if not os.path.exists(self.output):
             line += '"pcp-dstat ' + self.context.pmGetConfig('PCP_VERSION') + ' CSV Output"\n'
             line += '"Author:","PCP team <pcp@groups.io> and Dag Wieers <dag@wieers.com>",,,,"URL:","https://pcp.io/ and http://dag.wieers.com/home-made/dstat/"\n'
-        import getpass
+        import getpass # pylint: disable=import-outside-toplevel
         line += '"Host:","' + self.context.pmGetContextHostName() + '",,,,"User:","' + getpass.getuser() + '"\n'
         line += '"Cmdline:","' + self.context.pmProgname() + ' ' + ' '.join(self.arguments) + '",,,,"Date:","' + time.strftime('%d %b %Y %H:%M:%S %Z') + '"\n'
         ### Process title
         for o in visible:
             line += o.csvtitle()
             if o is not visible[-1]:
-                line += CHAR['sep'] * len(o.names)
+                line += CHAR['sep']
             elif self.totlist != visible:
                 pass #line += THEME['title'] + CHAR['gt']
         line += '\n'
@@ -1411,14 +1443,19 @@ class DstatTool(object):
     def finalize():
         """ Finalize and clean up (atexit) """
         try:
-            if not op.verify:
-                sys.stdout.write('\n')
+            if not op.verify and not op.show_conf:
+                if op.update:
+                    sys.stdout.write('\n')
                 if sys.stdout.isatty():
                     sys.stdout.write(ANSI['reset'])
             sys.stdout.flush()
         except IOError as error:
             if error.errno != errno.EPIPE:
                 raise error
+        try:
+            sys.stderr.close()
+        except Exception:
+            pass
         if op.pidfile:
             os.remove(op.pidfile)
 
@@ -1572,7 +1609,10 @@ class DstatTool(object):
             line = newline
         else:
             line = newline + line
-        oline = newoline + oline
+        if self.novalues:
+            oline = newoline
+        else:
+            oline = newoline + oline
 
         # Print stats
         sys.stdout.write(line + THEME['input'])
@@ -1594,7 +1634,7 @@ class DstatTool(object):
         # Finish the line
         if not op.update and self.novalues is False:
             sys.stdout.write('\n')
-        if self.output and step == self.delay:
+        if self.output and step == self.delay and self.novalues is False:
             outputfile.write('\n')
 
     def execute(self):
@@ -1636,7 +1676,6 @@ if __name__ == '__main__':
     try:
         dstat = DstatTool(sys.argv[1:])
         dstat.execute()
-
     except pmapi.pmErr as error:
         if error.args[0] != PM_ERR_EOL:
             sys.stderr.write('%s: %s\n' % (error.progname(), error.message()))

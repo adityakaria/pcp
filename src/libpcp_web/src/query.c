@@ -372,25 +372,6 @@ extract_sha1(seriesQueryBaton *baton, pmSID series,
     return 0;
 }
 
-static int
-extract_time(seriesQueryBaton *baton, pmSID series,
-		redisReply *reply, sds *stamp)
-{
-    sds			msg, val;
-    char		*point;
-
-    if (reply->type == REDIS_REPLY_STRING) {
-	val = sdscpylen(*stamp, reply->str, reply->len);
-	if ((point = strchr(val, '-')) != NULL)
-	    *point = '.';
-	*stamp = val;
-	return 0;
-    }
-    infofmt(msg, "expected string timestamp in series %s", series);
-    batoninfo(baton, PMLOG_RESPONSE, msg);
-    return -EPROTO;
-}
-
 /*
  * Report a timeseries result - timestamps and (instance) values
  */
@@ -428,60 +409,199 @@ series_instance_reply(seriesQueryBaton *baton, sds series,
 }
 
 static int
-series_result_reply(seriesQueryBaton *baton, sds series, pmSeriesValue *value,
-		int nelements, redisReply **elements)
+extract_time(seriesQueryBaton *baton, pmSID series,
+		redisReply *reply, sds *stamp, pmTimespec *ts)
 {
-    redisReply		*reply;
-    sds			msg;
-    int			i, sts;
+    sds			msg, val;
+    char		*point = NULL;
+    __uint64_t		milliseconds, fractions, crossover;
 
-    /* expecting timestamp:valueset pairs, then instance:value pairs */
-    if (nelements % 2) {
-	infofmt(msg, "expected time:valueset pairs in %s XRANGE", series);
-	batoninfo(baton, PMLOG_RESPONSE, msg);
-	return -EPROTO;
-    }
-
-    for (i = 0; i < nelements; i += 2) {
-	reply = elements[i+1];
-	if ((sts = extract_time(baton, series, elements[i],
-				&value->timestamp)) < 0) {
-	    baton->error = sts;
-	} else if (reply->type != REDIS_REPLY_ARRAY) {
-	    infofmt(msg, "expected value array for series %s %s (type=%s)",
-			series, XRANGE, redis_reply_type(reply));
-	    batoninfo(baton, PMLOG_RESPONSE, msg);
-	    baton->error = -EPROTO;
-	} else if ((sts = series_instance_reply(baton, series, value,
-				reply->elements, reply->element)) < 0) {
-	    baton->error = sts;
+    if (reply->type == REDIS_REPLY_STRING) {
+	val = sdscpylen(*stamp, reply->str, reply->len);
+	milliseconds = strtoull(val, &point, 0);
+	if (point && *point == '-') {
+	    *point = '.';
+	    fractions = strtoull(point + 1, NULL, 0);
+	} else {
+	    fractions = 0;
 	}
+	crossover = milliseconds % 1000;
+	ts->tv_sec = milliseconds / 1000;
+	ts->tv_nsec = (fractions * 1000) + (crossover * 1000000);
+	*stamp = val;
+	return 0;
     }
+    infofmt(msg, "expected string timestamp in series %s", series);
+    batoninfo(baton, PMLOG_RESPONSE, msg);
+    return -EPROTO;
+}
+
+static inline int
+pmTimespec_cmp(pmTimespec *a, pmTimespec *b)
+{
+    if (a->tv_sec != b->tv_sec)
+	return (a->tv_sec > b->tv_sec) ? 1 : -1;
+    if (a->tv_nsec > b->tv_nsec)
+	return 1;
+    if (a->tv_nsec < b->tv_nsec)
+	return -1;
     return 0;
+}
+
+static inline void
+pmTimespec_add(pmTimespec *t1, pmTimespec *t2)
+{
+    __int64_t		sec = t1->tv_sec + t2->tv_sec;
+    __int64_t		nsec = t1->tv_nsec + t2->tv_nsec;
+
+    if (nsec >= 1000000000) {
+        nsec -= 1000000000;
+        sec++;
+    }
+    t1->tv_sec = sec;
+    t1->tv_nsec = nsec;
+}
+
+typedef struct seriesSampling {
+    unsigned int	setup;		/* one-pass calculation flag */
+    unsigned int	subsampling;	/* sample interval requested */
+    unsigned int	count;		/* N sampled values, so far */
+    pmSeriesValue	value;		/* current sample being built */
+    pmTimespec		goal;		/* 'ideal' sample timestamp */
+    pmTimespec		delta;		/* sampling interval (step) */
+    pmTimespec		next_timespec;	/* from the following sample */
+    sds			next_timestamp;	/* from the following sample */
+} seriesSampling;
+
+static int
+use_next_sample(seriesSampling *sampling)
+{
+    /* if the next timestamp is past our goal, use the current value */
+    if (pmTimespec_cmp(&sampling->next_timespec, &sampling->goal) > 0) {
+	/* selected a value for this interval so move the goal posts */
+	pmTimespec_add(&sampling->goal, &sampling->delta);
+	return 0;
+    }
+    return 1;
 }
 
 static void
 series_values_reply(seriesQueryBaton *baton, sds series,
-		int nelements, redisReply **elements, void *arg)
+		int nsamples, redisReply **samples, void *arg)
 {
-    pmSeriesValue	value;
-    redisReply		*reply;
-    int			i, sts;
+    seriesSampling	sampling = {0};
+    redisReply		*reply, *sample, **elements;
+    timing_t		*tp = &baton->u.query.timing;
+    int			n, sts, next, nelements;
+    sds			msg, save_timestamp;
 
-    value.timestamp = sdsempty();
-    value.series = sdsempty();
-    value.data = sdsempty();
+    sampling.value.timestamp = sdsempty();
+    sampling.value.series = sdsempty();
+    sampling.value.data = sdsempty();
 
-    for (i = 0; i < nelements; i++) {
-	reply = elements[i];
-	if ((sts = series_result_reply(baton, series, &value,
-				reply->elements, reply->element)) < 0)
+    /* iterate over the 'samples' array */
+    for (n = 0; n < nsamples; n++) {
+	sample = samples[n];
+	if ((nelements = sample->elements) == 0)
+	    continue;
+	elements = sample->element;
+
+	/* expecting timestamp:valueset pairs, then instance:value pairs */
+	if (nelements % 2) {
+	    infofmt(msg, "expected time:valueset pairs in %s XRANGE", series);
+	    batoninfo(baton, PMLOG_RESPONSE, msg);
+	    sts = -EPROTO;
+	    break;
+	}
+
+	/* verify the instance:value pairs array before proceeding */
+	reply = elements[1];
+	if (reply->type != REDIS_REPLY_ARRAY) {
+	    infofmt(msg, "expected value array for series %s %s (type=%s)",
+			series, XRANGE, redis_reply_type(reply));
+	    batoninfo(baton, PMLOG_RESPONSE, msg);
+	    baton->error = -EPROTO;
+	    break;
+	}
+
+	/* setup state variables used internally during selection process */
+	if (sampling.setup == 0 && (tp->delta.tv_sec || tp->delta.tv_usec)) {
+	    /* 'next' is a nanosecond precision time interval to step with */
+	    sampling.delta.tv_sec = tp->delta.tv_sec;
+	    sampling.delta.tv_nsec = tp->delta.tv_usec * 1000;
+
+	    /* extract the first timestamp to kickstart the comparison process */
+	    if ((sts = extract_time(baton, series, elements[0],
+					&sampling.value.timestamp,
+					&sampling.value.ts)) < 0) {
+		baton->error = sts;
+		break;
+	    }
+	    /* 'goal' is the first target interval as an absolute timestamp */
+	    if (tp->start.tv_sec || tp->start.tv_usec) {
+		sampling.goal.tv_sec = tp->start.tv_sec;
+		sampling.goal.tv_nsec = tp->start.tv_usec * 1000;
+	    } else {
+		sampling.goal = sampling.value.ts;
+	    }
+	    sampling.goal.tv_nsec++;	/* ensure we use first sample */
+
+	    sampling.next_timestamp = sdsempty();
+	    sampling.subsampling = 1;
+	}
+	sampling.setup = 1;
+
+	if (sampling.subsampling == 0) {
+	    if ((sts = extract_time(baton, series, elements[0],
+					&sampling.value.timestamp,
+					&sampling.value.ts)) < 0) {
+		baton->error = sts;
+		continue;
+	    }
+	} else if ((next = n + 1) < nsamples) {
+	    /*
+	     * Compare this point and the next to the ideal based on delta;
+	     * skip over returning this value if the next one looks better.
+	     */
+	    elements = samples[next]->element;
+	    if ((sts = extract_time(baton, series, elements[0],
+					&sampling.next_timestamp,
+					&sampling.next_timespec)) < 0) {
+		baton->error = sts;
+		continue;
+	    } else if ((sts = use_next_sample(&sampling)) == 1) {
+		goto next_sample;
+	    } else if (sts == -1) {		/* sampling reached the end */
+		goto last_sample;
+	    } /* else falls through and may call user-supplied callback */
+	}
+
+	/* check whether a user-requested sample count has been reached */
+	if (tp->count && sampling.count++ >= tp->count)
+	    break;
+
+	if ((sts = series_instance_reply(baton, series, &sampling.value,
+				reply->elements, reply->element)) < 0) {
 	    baton->error = sts;
+	    goto last_sample;
+	}
+
+	if (sampling.subsampling == 0)
+	    continue;
+next_sample:
+	/* carefully swap time strings to avoid leaking memory */
+	save_timestamp = sampling.next_timestamp;
+	sampling.next_timestamp = sampling.value.timestamp;
+	sampling.value.timestamp = save_timestamp;
+	sampling.value.ts = sampling.next_timespec;
     }
 
-    sdsfree(value.timestamp);
-    sdsfree(value.series);
-    sdsfree(value.data);
+last_sample:
+    if (sampling.setup)
+	sdsfree(sampling.next_timestamp);
+    sdsfree(sampling.value.timestamp);
+    sdsfree(sampling.value.series);
+    sdsfree(sampling.value.data);
 }
 
 /*
@@ -1124,8 +1244,6 @@ series_prepare_time_reply(
     series_query_end_phase(baton);
 }
 
-#define DEFAULT_VALUE_COUNT 10
-
 static void
 series_prepare_time(seriesQueryBaton *baton, series_set_t *result)
 {
@@ -1133,7 +1251,7 @@ series_prepare_time(seriesQueryBaton *baton, series_set_t *result)
     unsigned char	*series = result->series;
     seriesGetSID	*sid;
     char		buffer[64];
-    sds			count, start, end, key, cmd;
+    sds			start, end, key, cmd;
     unsigned int	i;
 
     start = sdsnew(timeval_stream_str(&tp->start, buffer, sizeof(buffer)));
@@ -1147,12 +1265,6 @@ series_prepare_time(seriesQueryBaton *baton, series_set_t *result)
     if (pmDebugOptions.series)
 	fprintf(stderr, "END: %s\n", end);
 
-    if (tp->count == 0)
-	tp->count = DEFAULT_VALUE_COUNT;
-    count = sdscatfmt(sdsempty(), "%u", tp->count);
-    if (pmDebugOptions.series)
-	fprintf(stderr, "COUNT: %u\n", tp->count);
-
     /*
      * Query cache for the time series range (groups of instance:value
      * pairs, with an associated timestamp).
@@ -1160,23 +1272,21 @@ series_prepare_time(seriesQueryBaton *baton, series_set_t *result)
     for (i = 0; i < result->nseries; i++, series += SHA1SZ) {
 	sid = calloc(1, sizeof(seriesGetSID));
 	pmwebapi_hash_str(series, buffer, sizeof(buffer));
+
 	initSeriesGetSID(sid, buffer, 1, baton);
 	seriesBatonReference(baton, "series_prepare_time");
 
 	key = sdscatfmt(sdsempty(), "pcp:values:series:%S", sid->name);
 
-	/* XREAD key t1 t2 [COUNT count] */
-	cmd = redis_command(6);
+	/* XRANGE key t1 t2 */
+	cmd = redis_command(4);
 	cmd = redis_param_str(cmd, XRANGE, XRANGE_LEN);
 	cmd = redis_param_sds(cmd, key);
 	cmd = redis_param_sds(cmd, start);
 	cmd = redis_param_sds(cmd, end);
-	cmd = redis_param_str(cmd, "COUNT", sizeof("COUNT")-1);
-	cmd = redis_param_sds(cmd, count);
 	redisSlotsRequest(baton->slots, XRANGE, key, cmd,
 				series_prepare_time_reply, sid);
     }
-    sdsfree(count);
     sdsfree(start);
     sdsfree(end);
 }
@@ -1268,7 +1378,9 @@ series_query_report_values(void *arg)
 static int
 series_time_window(timing_t *tp)
 {
-    if (tp->ranges || tp->starts || tp->ends || tp->counts)
+    if (tp->window.range ||
+	tp->window.start || tp->window.end ||
+	tp->window.count || tp->window.delta)
 	return 1;
     return 0;
 }
@@ -1553,7 +1665,6 @@ series_label_reply(seriesQueryBaton *baton, sds series,
 
     nmapID = sdsnewlen(SDS_NOINIT, 20);
     vmapID = sdsnewlen(SDS_NOINIT, 20);
-    vkey = sdsempty();
 
     /* perform the label value reverse lookup */
     nelements /= 2;
@@ -1566,9 +1677,8 @@ series_label_reply(seriesQueryBaton *baton, sds series,
 	vmapID = sdscatlen(vmapID, elements[index+1]->str, elements[index+1]->len);
 
 	if ((entry = redisMapLookup(baton->u.lookup.map, nmapID)) != NULL) {
-	    sdsclear(vkey);
 	    pmwebapi_hash_str((unsigned char *)nmapID, hashbuf, sizeof(hashbuf));
-	    vkey = sdscatfmt(vkey, "label.%s.value", hashbuf);
+	    vkey = sdscatfmt(sdsempty(), "label.%s.value", hashbuf);
 	    vmap = redisMapCreate(vkey);
 	    name = redisMapValue(entry);
 
@@ -1600,7 +1710,6 @@ series_label_reply(seriesQueryBaton *baton, sds series,
 
     sdsfree(nmapID);
     sdsfree(vmapID);
-    sdsfree(vkey);
     return sts;
 }
 
@@ -2228,6 +2337,171 @@ pmSeriesMetrics(pmSeriesSettings *settings, int nseries, sds *series, void *arg)
     baton->phases[i++].func = series_lookup_services;
     baton->phases[i++].func = series_lookup_mapping;
     baton->phases[i++].func = series_lookup_metrics;
+    baton->phases[i++].func = series_lookup_finished;
+    assert(i <= QUERY_PHASES);
+    seriesBatonPhases(baton->current, i, baton);
+    return 0;
+}
+
+static void
+parsedelta(seriesQueryBaton *baton, sds string, struct timeval *result, const char *source)
+{
+    char		*error;
+    sds			msg;
+    int			sts;
+
+    if ((sts = pmParseInterval(string, result, &error)) < 0) {
+	infofmt(msg, "Cannot parse time %s with pmParseInterval:\n%s",
+		source, error);
+	batoninfo(baton, PMLOG_ERROR, msg);
+	baton->error = sts;
+	free(error);
+    }
+}
+
+static void
+parsetime(seriesQueryBaton *baton, sds string, struct timeval *result, const char *source)
+{
+    struct timeval	start = { 0, 0 };
+    struct timeval	end = { INT_MAX, 0 };
+    char		*error;
+    sds			msg;
+    int			sts;
+
+    if ((sts = __pmParseTime(string, &start, &end, result, &error)) < 0) {
+	infofmt(msg, "Cannot parse %s time with __pmParseTime:\n%s",
+		source, error);
+	batoninfo(baton, PMLOG_ERROR, msg);
+	baton->error = sts;
+	free(error);
+    }
+}
+
+static void
+parseuint(seriesQueryBaton *baton, sds string, unsigned int *vp, const char *source)
+{
+    unsigned int	value;
+    char		*endnum;
+    sds			msg;
+
+    value = (unsigned int)strtoul(string, &endnum, 10);
+    if (*endnum != '\0') {
+	infofmt(msg, "Invalid sample %s requested - %s", source, string);
+	batoninfo(baton, PMLOG_ERROR, msg);
+	baton->error = -EINVAL;
+    } else {
+	*vp = value;
+    }
+}
+
+static void
+parsezone(seriesQueryBaton *baton, sds string, int *zone, const char *source)
+{
+    char		error[PM_MAXERRMSGLEN];
+    sds			msg;
+    int			sts;
+
+    if ((sts = pmNewZone(string)) < 0) {
+	infofmt(msg, "Cannot parse %s with pmNewZone:\n%s - %s",
+		source, string, pmErrStr_r(sts, error, sizeof(error)));
+	batoninfo(baton, PMLOG_ERROR, msg);
+	baton->error = sts;
+    } else {
+	*zone = sts;
+    }
+}
+
+static void
+parseseries(seriesQueryBaton *baton, sds series, unsigned char *result)
+{
+    unsigned int	i, off;
+    char		*endptr, tuple[3] = {0};
+    sds			msg;
+
+    for (i = 0; i < 20; i++) {
+	off = i * 2;
+	tuple[0] = series[off];
+	tuple[1] = series[off+1];
+	result[i] = (unsigned char)strtoul(tuple, &endptr, 16);
+	if (endptr != &tuple[2]) {
+	    infofmt(msg, "Invalid SID %s near offset %u", series, off);
+	    batoninfo(baton, PMLOG_ERROR, msg);
+	    baton->error = -EINVAL;
+	}
+    }
+}
+
+static void
+initSeriesGetValues(seriesQueryBaton *baton, int nseries, sds *series,
+		pmSeriesTimeWindow *window)
+{
+    struct series_set	*result = &baton->u.query.root.result;
+    struct timing	*timing = &baton->u.query.timing;
+    struct timeval	offset;
+    int			i;
+
+    /* validate and convert 40-byte (ASCII) SIDs to internal 20-byte form */
+    result->nseries = nseries;
+    if ((result->series = calloc(nseries, 20)) == NULL) {
+	baton->error = -ENOMEM;
+    } else {
+	for (i = 0; i < nseries; i++)
+	    parseseries(baton, series[i], result->series + (i * 20));
+    }
+    if (baton->error) {
+	if (result->series)
+	    free(result->series);
+	return;
+    }
+
+    /* validate and convert time window specification to internal struct */
+    timing->window = *window;
+    if (window->delta)
+	parsedelta(baton, window->delta, &timing->delta, "delta");
+    if (window->align)
+	parsetime(baton, window->align, &timing->align, "align");
+    if (window->start)
+	parsetime(baton, window->start, &timing->start, "start");
+    if (window->end)
+	parsetime(baton, window->end, &timing->end, "end");
+    if (window->range) {
+	parsedelta(baton, window->range, &timing->start, "range");
+	gettimeofday(&offset, NULL);
+	tsub(&offset, &timing->start);
+	timing->start = offset;
+	timing->end.tv_sec = INT_MAX;
+    }
+    if (window->count)
+	parseuint(baton, window->count, &timing->count, "count");
+    if (window->offset)
+	parseuint(baton, window->offset, &timing->offset, "offset");
+    if (window->zone)
+	parsezone(baton, window->zone, &timing->zone, "timezone");
+
+    /* if no time window parameters passed, default to latest value */
+    if (!series_time_window(timing))
+	timing->count = 1;
+}
+
+int
+pmSeriesValues(pmSeriesSettings *settings, pmSeriesTimeWindow *timing,
+		int nseries, sds *series, void *arg)
+{
+    seriesQueryBaton	*baton;
+    size_t		bytes;
+    unsigned int	i = 0;
+
+    if (nseries <= 0)
+	return -EINVAL;
+    bytes = sizeof(seriesQueryBaton) + (nseries * sizeof(seriesGetSID));
+    if ((baton = calloc(1, bytes)) == NULL)
+	return -ENOMEM;
+    initSeriesQueryBaton(baton, settings, arg);
+    initSeriesGetValues(baton, nseries, series, timing);
+
+    baton->current = &baton->phases[0];
+    baton->phases[i++].func = series_lookup_services;
+    baton->phases[i++].func = series_query_report_values;
     baton->phases[i++].func = series_lookup_finished;
     assert(i <= QUERY_PHASES);
     seriesBatonPhases(baton->current, i, baton);

@@ -292,7 +292,8 @@ typedef struct pmdaInterface {
 #define PMDA_FLAG_AUTHORIZE	(1<<2)	/* authentication support */
 #define PMDA_FLAG_CONTAINER	(1<<6)	/* container name support */
 
-/* communication attributes */
+/* communication attributes (mirrored from libpcp.h) */
+#define PMDA_ATTR_USERNAME   5  /* username (sasl) */
 #define PMDA_ATTR_USERID	11	/* uid - user identifier (posix) */
 #define PMDA_ATTR_GROUPID	12	/* gid - group identifier (posix) */
 #define PMDA_ATTR_PROCESSID	14	/* pid - process identifier (posix) */
@@ -306,6 +307,7 @@ typedef struct __pmDSO {
     char		*name;
     char		*init;
     void		*handle;
+    int			ctx_last_prof;	/* ctx that sent last profile */
     pmdaInterface	dispatch;
 } __pmDSO;
 
@@ -524,7 +526,7 @@ PMDA_CALL extern void pmdaSetLabelCallBack(pmdaInterface *, pmdaLabelCallBack);
  *	Return the help text for the metric or instance domain.
  *
  * pmdaStore
- *	Store a value into a metric. This is a no-op.
+ *	Store a value into a metric. This sets the context number.
  *
  * pmdaPMID
  *	Return the PMID for a named metric within a dynamic subtree

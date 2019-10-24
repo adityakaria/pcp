@@ -2,14 +2,14 @@
  * Copyright (c) 2019 Red Hat.
  *
  * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License as published by the
- * Free Software Foundation; either version 2 of the License, or (at your
- * option) any later version.
+ * under the terms of the GNU Lesser General Public License as published
+ * by the Free Software Foundation; either version 2.1 of the License, or
+ * (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful, but
  * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
- * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
- * for more details.
+ * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public
+ * License for more details.
  */
 #include "server.h"
 #include <assert.h>
@@ -21,8 +21,10 @@ typedef enum pmSeriesRestKey {
     RESTKEY_INSTS,
     RESTKEY_LABELS,
     RESTKEY_METRIC,
+    RESTKEY_VALUES,
     RESTKEY_LOAD,
     RESTKEY_QUERY,
+    RESTKEY_PING,
 } pmSeriesRestKey;
 
 typedef struct pmSeriesRestCommand {
@@ -35,6 +37,7 @@ typedef struct pmSeriesBaton {
     struct client	*client;
     pmSeriesRestKey	restkey;
     pmSeriesFlags	flags;
+    pmSeriesTimeWindow	window;
     uv_work_t		loading;
     unsigned int	working;
     int			nsids;
@@ -46,6 +49,7 @@ typedef struct pmSeriesBaton {
     unsigned int	values;
     sds			info;
     sds			query;
+    sds			clientid;
 } pmSeriesBaton;
 
 static pmSeriesRestCommand commands[] = {
@@ -55,12 +59,17 @@ static pmSeriesRestCommand commands[] = {
     { .key = RESTKEY_LABELS, .name = "labels", .size = sizeof("labels")-1 },
     { .key = RESTKEY_METRIC, .name = "metrics", .size = sizeof("metrics")-1 },
     { .key = RESTKEY_SOURCE, .name = "sources", .size = sizeof("sources")-1 },
-    { .key = RESTKEY_LOAD,  .name = "load",  .size = sizeof("load")-1 },
+    { .key = RESTKEY_VALUES, .name = "values", .size = sizeof("values")-1 },
+    { .key = RESTKEY_LOAD, .name = "load", .size = sizeof("load")-1 },
+    { .key = RESTKEY_PING, .name = "ping", .size = sizeof("ping")-1 },
     { .key = RESTKEY_NONE }
 };
 
 /* constant string keys (initialized during servlet setup) */
-static sds PARAM_EXPR, PARAM_MATCH, PARAM_SERIES, PARAM_SOURCE;
+static sds PARAM_EXPR, PARAM_MATCH, PARAM_SERIES, PARAM_SOURCE, PARAM_CLIENT;
+static sds PARAM_ALIGN, PARAM_COUNT, PARAM_DELTA, PARAM_OFFSET,
+	   PARAM_SAMPLES, PARAM_INTERVAL, PARAM_START, PARAM_FINISH,
+	   PARAM_BEGIN, PARAM_END, PARAM_RANGE, PARAM_ZONE;
 
 /* constant global strings (read-only) */
 static const char pmseries_success[] = "{\"success\":true}\r\n";
@@ -84,20 +93,37 @@ pmseries_lookup_restkey(sds url)
 }
 
 static void
-pmseries_free_baton(struct client *client, pmSeriesBaton *baton)
+pmseries_data_release(struct client *client)
 {
-    if (pmDebugOptions.http)
-	fprintf(stderr, "pmseries_free_baton %p for client %p\n", baton, client);
+    pmSeriesBaton	*baton = (pmSeriesBaton *)client->u.http.data;
 
-    if (baton->sid)
-	sdsfree(baton->sid);
-    if (baton->info)
-	sdsfree(baton->info);
-    if (baton->query)
-	sdsfree(baton->query);
-    if (baton->suffix)
-	sdsfree(baton->suffix);
+    if (pmDebugOptions.http)
+	fprintf(stderr, "%s: %p for client %p\n", "pmseries_data_release",
+			baton, client);
+
+    sdsfree(baton->sid);
+    sdsfree(baton->info);
+    sdsfree(baton->query);
+    sdsfree(baton->suffix);
+    sdsfree(baton->clientid);
     memset(baton, 0, sizeof(*baton));
+    free(baton);
+}
+
+/*
+ * If any request is accompanied by 'client', the client is using
+ * this to identify responses.  Wrap the usual response using the
+ * identifier - by adding a JSON object at the top level with two
+ * fields, 'client' (ID) and 'result' (the rest of the response).
+ */
+static sds
+push_client_identifier(pmSeriesBaton *baton, sds result)
+{
+    if (baton->clientid) {
+	baton->suffix = json_push_suffix(baton->suffix, JSON_FLAG_OBJECT);
+	return sdscatfmt(result, "{\"client\":%S,\"result\":", baton->clientid);
+    }
+    return result;
 }
 
 static int
@@ -106,10 +132,12 @@ on_pmseries_match(pmSID sid, void *arg)
     pmSeriesBaton	*baton = (pmSeriesBaton *)arg;
     struct client	*client = baton->client;
     const char		*prefix;
-    sds			result = http_get_buffer(baton->client);
+    sds			result;
 
     if (baton->sid == NULL || sdscmp(baton->sid, sid) != 0) {
+	result = http_get_buffer(baton->client);
 	if (baton->series++ == 0) {
+	    result = push_client_identifier(baton, result);
 	    baton->suffix = json_push_suffix(baton->suffix, JSON_FLAG_ARRAY);
 	    prefix = "[";
 	} else {
@@ -136,6 +164,7 @@ on_pmseries_value(pmSID sid, pmSeriesValue *value, void *arg)
     quoted = sdscatrepr(sdsempty(), value->data, sdslen(value->data));
 
     if (baton->series++ == 0) {
+	result = push_client_identifier(baton, result);
 	baton->suffix = json_push_suffix(baton->suffix, JSON_FLAG_ARRAY);
 	prefix = "[";
     } else {
@@ -162,6 +191,7 @@ on_pmseries_desc(pmSID sid, pmSeriesDesc *desc, void *arg)
     sds			s, result = http_get_buffer(baton->client);
 
     if ((s = baton->sid) == NULL) {
+	result = push_client_identifier(baton, result);
 	baton->suffix = json_push_suffix(baton->suffix, JSON_FLAG_ARRAY);
 	baton->sid = sdsdup(sid);
 	prefix = "[";
@@ -196,6 +226,7 @@ on_pmseries_metric(pmSID sid, sds name, void *arg)
 
     if (sid == NULL) {	/* request for all metric names globally */
 	if (baton->values == 0) {
+	    result = push_client_identifier(baton, result);
 	    baton->suffix = json_push_suffix(baton->suffix, JSON_FLAG_ARRAY);
 	    prefix = "[";
 	} else {
@@ -207,6 +238,7 @@ on_pmseries_metric(pmSID sid, sds name, void *arg)
 	    baton->sid = sdsdup(sid);
 	    baton->series++;
 	    assert(baton->values == 0);
+	    result = push_client_identifier(baton, result);
 	    baton->suffix = json_push_suffix(baton->suffix, JSON_FLAG_ARRAY);
 	    prefix = "[";
 	} else {
@@ -239,6 +271,7 @@ on_pmseries_context(pmSID sid, sds name, void *arg)
     quoted = sdscatrepr(sdsempty(), name, sdslen(name));
     if (sid == NULL) {	/* request for all source names */
 	if (baton->values == 0) {
+	    result = push_client_identifier(baton, result);
 	    baton->suffix = json_push_suffix(baton->suffix, JSON_FLAG_ARRAY);
 	    prefix = "[";
 	} else {
@@ -249,6 +282,7 @@ on_pmseries_context(pmSID sid, sds name, void *arg)
 	if ((s = baton->sid) == NULL) {
 	    baton->sid = sdsdup(sid);
 	    baton->series++;
+	    result = push_client_identifier(baton, result);
 	    baton->suffix = json_push_suffix(baton->suffix, JSON_FLAG_ARRAY);
 	    prefix = "[";
 	} else {
@@ -277,13 +311,16 @@ on_pmseries_label(pmSID sid, sds label, void *arg)
     pmSeriesBaton	*baton = (pmSeriesBaton *)arg;
     struct client	*client = baton->client;
     const char		*prefix;
-    sds			s, result = http_get_buffer(client);
+    sds			s, result;
 
     if (baton->nsids != 0)
 	return 0;
 
+    result = http_get_buffer(client);
+
     if (sid == NULL) {	/* all labels globally requested */
 	if (baton->values == 0) {
+	    result = push_client_identifier(baton, result);
 	    baton->suffix = json_push_suffix(baton->suffix, JSON_FLAG_ARRAY);
 	    prefix = "[";
 	} else {
@@ -292,6 +329,7 @@ on_pmseries_label(pmSID sid, sds label, void *arg)
 	result = sdscatfmt(result, "%s\"%S\"", prefix, label);
     }
     else if ((s = baton->sid) == NULL) {
+	result = push_client_identifier(baton, result);
 	baton->sid = sdsdup(sid);
 	baton->series++;
 	baton->suffix = json_push_suffix(baton->suffix, JSON_FLAG_ARRAY);
@@ -322,17 +360,19 @@ on_pmseries_labelmap(pmSID sid, pmSeriesLabel *label, void *arg)
     pmSeriesBaton	*baton = (pmSeriesBaton *)arg;
     struct client	*client = baton->client;
     const char		*prefix;
-    sds			s, name, value, result = http_get_buffer(client);
+    sds			s, name, value, result;
 
     if (baton->nsids == 0)
 	return 0;
 
     name = label->name;
     value = label->value;
+    result = http_get_buffer(client);
 
     if ((s = baton->sid) == NULL) {
 	baton->sid = sdsdup(sid);
 	baton->series++;
+	result = push_client_identifier(baton, result);
 	baton->suffix = json_push_suffix(baton->suffix, JSON_FLAG_ARRAY);
 	baton->suffix = json_push_suffix(baton->suffix, JSON_FLAG_OBJECT);
 	baton->suffix = json_push_suffix(baton->suffix, JSON_FLAG_OBJECT);
@@ -367,6 +407,7 @@ on_pmseries_instance(pmSID sid, sds name, void *arg)
     quoted = sdscatrepr(sdsempty(), name, sdslen(name));
     if (sid == NULL) {	/* all instances globally requested */
 	if (baton->values == 0) {
+	    result = push_client_identifier(baton, result);
 	    baton->suffix = json_push_suffix(baton->suffix, JSON_FLAG_ARRAY);
 	    prefix = "[";
 	} else {
@@ -378,6 +419,7 @@ on_pmseries_instance(pmSID sid, sds name, void *arg)
 	baton->sid = sdsdup(sid);
 	baton->series++;
 	assert(baton->values == 0);
+	result = push_client_identifier(baton, result);
 	baton->suffix = json_push_suffix(baton->suffix, JSON_FLAG_ARRAY);
 	baton->suffix = json_push_suffix(baton->suffix, JSON_FLAG_OBJECT);
 	baton->suffix = json_push_suffix(baton->suffix, JSON_FLAG_ARRAY);
@@ -417,6 +459,7 @@ on_pmseries_inst(pmSID sid, pmSeriesInst *inst, void *arg)
     quoted = sdscatrepr(sdsempty(), inst->name, sdslen(inst->name));
 
     if (baton->values++ == 0) {
+	result = push_client_identifier(baton, result);
 	baton->suffix = json_push_suffix(baton->suffix, JSON_FLAG_ARRAY);
 	prefix = "[";
     } else {
@@ -445,22 +488,27 @@ on_pmseries_done(int status, void *arg)
     if (status == 0) {
 	code = HTTP_STATUS_OK;
 	/* complete current response with JSON suffix if needed */
-	if ((msg = baton->suffix) == NULL)	/* empty OK response */
-	    msg = sdsnewlen(pmseries_success, sizeof(pmseries_success) - 1);
+	if ((msg = baton->suffix) == NULL) {	/* empty OK response */
+	    if (baton->clientid)
+		msg = sdscatfmt(sdsempty(),
+				"{\"client\":%S,\"success\":%s}\r\n",
+				baton->clientid, "true");
+	    else
+		msg = sdsnewlen(pmseries_success, sizeof(pmseries_success) - 1);
+	}
 	baton->suffix = NULL;
     } else {
 	if (((code = client->u.http.parser.status_code)) == 0)
-	    code = HTTP_STATUS_NOT_FOUND;
-	msg = sdsnewlen(pmseries_failure, sizeof(pmseries_failure) - 1);
+	    code = HTTP_STATUS_BAD_REQUEST;
+	if (baton->clientid)
+	    msg = sdscatfmt(sdsempty(),
+				"{\"client\":%S,\"success\":%s}\r\n",
+				baton->clientid, "false");
+	else
+	    msg = sdsnewlen(pmseries_failure, sizeof(pmseries_failure) - 1);
 	flags |= HTTP_FLAG_JSON;
     }
     http_reply(client, msg, code, flags);
-
-    /* close connection if requested or if HTTP 1.0 and keepalive not set */
-    if (http_should_keep_alive(&client->u.http.parser) == 0)
-	http_close(client);
-
-    pmseries_free_baton(client, baton);
 }
 
 static void
@@ -494,6 +542,38 @@ pmseries_setup_request_parameters(struct client *client,
     size_t		length;
     sds			series;
 
+    if (parameters) {
+	/* allow all APIs to pass(-through) a 'client' parameter */
+	if ((entry = dictFind(parameters, PARAM_CLIENT)) != NULL) {
+	    series = dictGetVal(entry);   /* leave sds value, dup'd below */
+	    baton->clientid = sdscatrepr(sdsempty(), series, sdslen(series));
+	}
+    }
+
+    if (parameters && baton->restkey == RESTKEY_VALUES) {
+	/* not claiming time window dict values, freed the usual way */
+	if ((entry = dictFind(parameters, PARAM_ALIGN)) != NULL)
+	    baton->window.align = dictGetVal(entry);
+	if ((entry = dictFind(parameters, PARAM_SAMPLES)) != NULL ||
+	    (entry = dictFind(parameters, PARAM_COUNT)) != NULL)
+	    baton->window.count = dictGetVal(entry);
+	if ((entry = dictFind(parameters, PARAM_INTERVAL)) != NULL ||
+	    (entry = dictFind(parameters, PARAM_DELTA)) != NULL)
+	    baton->window.delta = dictGetVal(entry);
+	if ((entry = dictFind(parameters, PARAM_START)) != NULL ||
+	    (entry = dictFind(parameters, PARAM_BEGIN)) != NULL)
+	    baton->window.start = dictGetVal(entry);
+	if ((entry = dictFind(parameters, PARAM_FINISH)) != NULL ||
+	    (entry = dictFind(parameters, PARAM_END)) != NULL)
+	    baton->window.end = dictGetVal(entry);
+	if ((entry = dictFind(parameters, PARAM_RANGE)) != NULL)
+	    baton->window.range = dictGetVal(entry);
+	if ((entry = dictFind(parameters, PARAM_OFFSET)) != NULL)
+	    baton->window.offset = dictGetVal(entry);
+	if ((entry = dictFind(parameters, PARAM_ZONE)) != NULL)
+	    baton->window.zone = dictGetVal(entry);
+    }
+
     switch (baton->restkey) {
     case RESTKEY_QUERY:
     case RESTKEY_LOAD:
@@ -526,6 +606,7 @@ pmseries_setup_request_parameters(struct client *client,
     case RESTKEY_INSTS:
     case RESTKEY_LABELS:
     case RESTKEY_METRIC:
+    case RESTKEY_VALUES:
 	/* optional comma-separated series identifier(s) for these commands */
 	if (parameters != NULL) {
 	    if ((entry = dictFind(parameters, PARAM_SERIES)) != NULL) {
@@ -555,6 +636,9 @@ pmseries_setup_request_parameters(struct client *client,
 	}
 	break;
 
+    case RESTKEY_PING:
+	break;
+
     case RESTKEY_NONE:
     default:
 	client->u.http.parser.status_code = HTTP_STATUS_BAD_REQUEST;
@@ -576,15 +660,13 @@ pmseries_request_url(struct client *client, sds url, dict *parameters)
     if ((key = pmseries_lookup_restkey(url)) == RESTKEY_NONE)
 	return 0;
 
-    if ((baton = client->u.http.data) == NULL) {
-	if ((baton = calloc(1, sizeof(*baton))) == NULL)
-	    client->u.http.parser.status_code = HTTP_STATUS_INTERNAL_SERVER_ERROR;
+    if ((baton = calloc(1, sizeof(*baton))) != NULL) {
 	client->u.http.data = baton;
-    }
-    if (baton) {
 	baton->client = client;
 	baton->restkey = key;
 	pmseries_setup_request_parameters(client, baton, parameters);
+    } else {
+	client->u.http.parser.status_code = HTTP_STATUS_INTERNAL_SERVER_ERROR;
     }
     return 1;
 }
@@ -612,8 +694,7 @@ pmseries_request_body(struct client *client, const char *content, size_t length)
     switch (baton->restkey) {
     case RESTKEY_LOAD:
     case RESTKEY_QUERY:
-	if (baton->query)
-	    sdsfree(baton->query);
+	sdsfree(baton->query);
 	baton->query = sdsnewlen(content, length);
 	break;
 
@@ -622,6 +703,7 @@ pmseries_request_body(struct client *client, const char *content, size_t length)
     case RESTKEY_LABELS:
     case RESTKEY_METRIC:
     case RESTKEY_SOURCE:
+    case RESTKEY_VALUES:
 	series = sdsnewlen(content, length);
 	baton->sids = sdssplitlen(series, length, "\n", 1, &baton->nsids);
 	sdsfree(series);
@@ -666,7 +748,6 @@ pmseries_request_load(struct client *client, pmSeriesBaton *baton)
     if (baton->query == NULL) {
 	message = sdsnewlen(failed, sizeof(failed) - 1);
 	http_reply(client, message, HTTP_STATUS_BAD_REQUEST, HTTP_FLAG_JSON);
-	pmseries_free_baton(client, baton);
     } else if (baton->working) {
 	message = sdsnewlen(loading, sizeof(loading) - 1);
 	http_reply(client, message, HTTP_STATUS_CONFLICT, HTTP_FLAG_JSON);
@@ -722,9 +803,18 @@ pmseries_request_done(struct client *client)
 	    on_pmseries_done(sts, baton);
 	break;
 
+    case RESTKEY_VALUES:
+	if ((sts = pmSeriesValues(&pmseries_settings, &baton->window,
+					baton->nsids, baton->sids, baton)) < 0)
+	    on_pmseries_done(sts, baton);
+	break;
+
     case RESTKEY_LOAD:
-    default:
 	pmseries_request_load(client, baton);
+	break;
+
+    default:  /*PING*/
+	on_pmseries_done(0, baton);
 	break;
     }
     return 0;
@@ -733,28 +823,56 @@ pmseries_request_done(struct client *client)
 static void
 pmseries_servlet_setup(struct proxy *proxy)
 {
-    if (PARAM_EXPR == NULL)
-	PARAM_EXPR = sdsnew("expr");
-    if (PARAM_MATCH == NULL)
-	PARAM_MATCH = sdsnew("match");
-    if (PARAM_SERIES == NULL)
-	PARAM_SERIES = sdsnew("series");
-    if (PARAM_SOURCE == NULL)
-	PARAM_SOURCE = sdsnew("source");
+    PARAM_EXPR = sdsnew("expr");
+    PARAM_MATCH = sdsnew("match");
+    PARAM_SERIES = sdsnew("series");
+    PARAM_SOURCE = sdsnew("source");
+    PARAM_CLIENT = sdsnew("client");
+
+    PARAM_ALIGN = sdsnew("align");
+    PARAM_BEGIN = sdsnew("begin");
+    PARAM_COUNT = sdsnew("count");
+    PARAM_DELTA = sdsnew("delta");
+    PARAM_END = sdsnew("end");
+    PARAM_INTERVAL = sdsnew("interval");
+    PARAM_OFFSET = sdsnew("offset");
+    PARAM_RANGE = sdsnew("range");
+    PARAM_SAMPLES = sdsnew("samples");
+    PARAM_START = sdsnew("start");
+    PARAM_FINISH = sdsnew("finish");
+    PARAM_ZONE = sdsnew("zone");
 
     pmSeriesSetSlots(&pmseries_settings.module, proxy->slots);
     pmSeriesSetEventLoop(&pmseries_settings.module, proxy->events);
     pmSeriesSetConfiguration(&pmseries_settings.module, proxy->config);
     pmSeriesSetMetricRegistry(&pmseries_settings.module, proxy->metrics);
+
+    pmSeriesSetup(&pmseries_settings.module, proxy);
 }
 
 static void
 pmseries_servlet_close(void)
 {
+    pmSeriesClose(&pmseries_settings.module);
+
     sdsfree(PARAM_EXPR);
     sdsfree(PARAM_MATCH);
     sdsfree(PARAM_SERIES);
     sdsfree(PARAM_SOURCE);
+    sdsfree(PARAM_CLIENT);
+
+    sdsfree(PARAM_ALIGN);
+    sdsfree(PARAM_BEGIN);
+    sdsfree(PARAM_COUNT);
+    sdsfree(PARAM_DELTA);
+    sdsfree(PARAM_END);
+    sdsfree(PARAM_FINISH);
+    sdsfree(PARAM_INTERVAL);
+    sdsfree(PARAM_OFFSET);
+    sdsfree(PARAM_RANGE);
+    sdsfree(PARAM_SAMPLES);
+    sdsfree(PARAM_START);
+    sdsfree(PARAM_ZONE);
 }
 
 struct servlet pmseries_servlet = {
@@ -765,4 +883,5 @@ struct servlet pmseries_servlet = {
     .on_headers		= pmseries_request_headers,
     .on_body		= pmseries_request_body,
     .on_done		= pmseries_request_done,
+    .on_release		= pmseries_data_release,
 };

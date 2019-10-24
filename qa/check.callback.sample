@@ -33,23 +33,35 @@ then
     fi
 fi
 
+# Security Enhanced Linux log messages
+audit=/var/log/audit/audit.log
+sudo=`which sudo`
+
 # Did pmlogger.daily get run as expected?
+# But don't bother if it is just after midnight!
 #
-yesterday=`pmdate -1d %Y%m%d`
-host=`hostname`
-case $host
+case `pmdate %H:%M`
 in
-    # CONFIGURE-ME
-    # - may need to add extra hosts here to enable this test
-    #
-    bozo|bozo-vm)
-	    if [ ! -f $PCP_LOG_DIR/pmlogger/$host/$yesterday.meta.xz -a ! -f $PCP_LOG_DIR/pmlogger/$host/$yesterday.meta ]
-	    then
-		echo "check.callback: fail: pmlogger.daily not well!"
-		echo "Missing $yesterday archive ..."
-		ls -l $PCP_LOG_DIR/pmlogger/$host/$yesterday.*
-	    fi
-	    ;;
+    00:[012]*)
+	;;
+    *)
+	yesterday=`pmdate -1d %Y%m%d`
+	host=`hostname`
+	case $host
+	in
+	    # CONFIGURE-ME
+	    # - may need to add extra hosts here to enable this test
+	    #
+	    bozo|bozo-vm|vm01|vm03|vm36)
+		    if [ ! -f $PCP_LOG_DIR/pmlogger/$host/$yesterday.meta.xz -a ! -f $PCP_LOG_DIR/pmlogger/$host/$yesterday.meta ]
+		    then
+			echo "check.callback: fail: pmlogger.daily not well!"
+			echo "Missing $yesterday archive ..."
+			ls -l $PCP_LOG_DIR/pmlogger/$host/$yesterday.*
+		    fi
+		    ;;
+	esac
+	;;
 esac
 
 status=0
@@ -62,7 +74,10 @@ then
     echo "--- start pre-check ---"
     ./941 --check $1
     ./870 --check $1
+    $sudo egrep '^type=(AVC|SELINUX).*pcp' $audit >$1.pre-avc 2>/dev/null
+    echo "before `wc -l <$1.pre-avc` AVC errors"
     echo "--- end pre-check ---"
+    exit
 fi
 
 # CONFIGURE-ME
@@ -72,7 +87,7 @@ fi
 # Aborting is good for hard problems, because you'd like to know which
 # QA test is breaking things and there is no point continuing.
 # Not aborting is good for transient problems, because the breakage may
-# be repaired autonomously (usually timeing related) or by a later QA
+# be repaired autonomously (usually timing related) or by a later QA
 # test.
 #
 abort=false
@@ -108,10 +123,13 @@ else
     else
 	echo "check.callback: fail: pmlogger not well!"
 	diff=false
-	cat $tmp.err.1 $tmp.out.1
 	if cmp $tmp.err.1 $tmp.err.2 >/dev/null
 	then
-	    if cmp $tmp.out.1 $tmp.out.2 >/dev/null
+	    # strip timestamps from ./870 output, then cmp
+	    #
+	    sed -e '/^Now:/d' <$tmp.out.1 >$tmp.tmp.1
+	    sed -e '/^Now:/d' <$tmp.out.2 >$tmp.tmp.2
+	    if cmp $tmp.tmp.1 $tmp.tmp.2 >/dev/null
 	    then
 		:
 	    else
@@ -186,5 +204,20 @@ then
     cat $tmp.out
     $abort && status=1
 fi
+
+# Check audit log for any Security Enhanced Linux access denials
+# related to PCP ...
+#
+$sudo egrep '^type=(AVC|SELINUX).*pcp' $audit 2>/dev/null >$1.post-avc
+diff $1.pre-avc $1.post-avc \
+| sed -n -e '/> /s///p' >$tmp.out
+if [ -s $tmp.out ]
+then
+    echo "check.callback: fail: new SELinux/AVC denials"
+    cat $tmp.out
+    echo "after `wc -l <$1.post-avc` AVC errors"
+    $abort && status=1
+fi
+rm -f $1.pre-avc $1.post-avc
 
 exit
